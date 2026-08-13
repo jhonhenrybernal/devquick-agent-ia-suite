@@ -8,8 +8,10 @@ use App\Http\Requests\Automation\AiProviderConfigurationRequest;
 use App\Models\Team;
 use App\Services\AiProvider\AiProviderApi;
 use Illuminate\Http\RedirectResponse;
+use Illuminate\Http\Request;
 use Inertia\Inertia;
 use Inertia\Response;
+use Symfony\Component\HttpFoundation\StreamedResponse;
 use Throwable;
 
 class AiProviderController extends Controller
@@ -126,5 +128,95 @@ class AiProviderController extends Controller
         ]);
 
         return to_route('automation.ai-provider.edit', $current_team);
+    }
+
+    /**
+     * Stream a live AI reply for the configured provider.
+     */
+    public function stream(
+        Request $request,
+        Team $current_team,
+        AiProviderApi $aiProviderApi,
+    ): StreamedResponse {
+        $configuration = $current_team->aiProviderConfiguration;
+        $prompt = trim((string) $request->string(
+            'prompt',
+            'Responde en espanol con una frase breve y clara confirmando que estas escuchando.',
+        ));
+
+        return response()->stream(function () use ($configuration, $aiProviderApi, $prompt): void {
+            $write = static function (array $payload): void {
+                echo 'data: '.json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)."\n\n";
+
+                if (ob_get_level() > 0) {
+                    ob_flush();
+                }
+
+                flush();
+            };
+
+            if (! $configuration) {
+                $write([
+                    'type' => 'error',
+                    'message' => 'No se encontro configuracion del proveedor IA.',
+                ]);
+
+                $write([
+                    'type' => 'done',
+                ]);
+
+                return;
+            }
+
+            $write([
+                'type' => 'status',
+                'message' => sprintf('Conectando con %s...', $configuration->providerEnum()->label()),
+            ]);
+
+            $responseText = '';
+
+            $result = $aiProviderApi->streamReply(
+                $configuration,
+                'Responde como un asistente de automatizacion de Laravel, claro, breve y en espanol.',
+                $prompt,
+                function (string $chunk) use (&$responseText, $write): void {
+                    $responseText .= $chunk;
+
+                    $write([
+                        'type' => 'chunk',
+                        'content' => $chunk,
+                    ]);
+                },
+            );
+
+            if (! $result['valid']) {
+                $write([
+                    'type' => 'error',
+                    'message' => $result['description'],
+                    'reason' => $result['failure_reason'] ?? null,
+                    'provider' => $result['provider'] ?? null,
+                    'model' => $result['model'] ?? null,
+                    'responseText' => $result['response_text'] ?? $responseText,
+                ]);
+
+                $write([
+                    'type' => 'done',
+                ]);
+
+                return;
+            }
+
+            $write([
+                'type' => 'done',
+                'message' => $result['description'],
+                'responseText' => $result['response_text'] ?? $responseText,
+                'provider' => $result['provider'] ?? null,
+                'model' => $result['model'] ?? null,
+            ]);
+        }, 200, [
+            'Content-Type' => 'text/event-stream; charset=UTF-8',
+            'Cache-Control' => 'no-cache, no-transform',
+            'X-Accel-Buffering' => 'no',
+        ]);
     }
 }

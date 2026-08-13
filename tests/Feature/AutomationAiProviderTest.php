@@ -182,3 +182,36 @@ test('ollama provider shows a clear message when it is not running', function ()
             'message' => 'Ollama no esta disponible en esta maquina. Instalalo o arracalo antes de volver a probar.',
         ]);
 });
+
+test('ollama provider live stream returns chunks and a completion event', function () {
+    Http::preventStrayRequests();
+
+    Http::fake([
+        'http://localhost:11434/api/chat*' => Http::response(
+            "{\"message\":{\"content\":\"Hola\"},\"done\":false}\n{\"message\":{\"content\":\" desde Ollama\"},\"done\":true}\n",
+            200,
+        ),
+    ]);
+
+    $owner = User::factory()->create();
+    $team = Team::factory()->create();
+    $team->members()->attach($owner, ['role' => TeamRole::Owner->value]);
+    $team->aiProviderConfiguration()->create([
+        'provider' => AiProvider::Ollama->value,
+        'model' => 'llama3.1',
+        'base_url' => 'http://localhost:11434',
+        'is_enabled' => true,
+    ]);
+
+    $response = $this
+        ->actingAs($owner)
+        ->get(route('automation.ai-provider.stream', $team, false).'?prompt=hola');
+
+    $response->assertOk()->assertStreamed();
+
+    expect($response->streamedContent())
+        ->toContain('"type":"chunk"')
+        ->toContain('Hola')
+        ->toContain('desde Ollama')
+        ->toContain('"type":"done"');
+});

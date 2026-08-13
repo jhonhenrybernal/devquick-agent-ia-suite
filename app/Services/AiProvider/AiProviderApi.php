@@ -5,6 +5,7 @@ namespace App\Services\AiProvider;
 use App\Enums\AiProvider;
 use App\Models\AiProviderConfiguration;
 use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
 use Throwable;
 
@@ -78,6 +79,36 @@ class AiProviderApi
             AiProvider::OpenAi => $this->generateOpenAiReply($configuration, $systemPrompt, $userPrompt),
             AiProvider::Gemini => $this->generateGeminiReply($configuration, $systemPrompt, $userPrompt),
             AiProvider::Ollama => $this->generateOllamaReply($configuration, $systemPrompt, $userPrompt),
+        };
+    }
+
+    /**
+     * Stream a reply using the configured provider.
+     *
+     * @param  callable(string): void  $onChunk
+     * @return array{
+     *     valid: bool,
+     *     provider: string,
+     *     provider_label: string,
+     *     description: string,
+     *     setup_url: string,
+     *     model?: string|null,
+     *     response_text?: string|null,
+     *     failure_reason?: string|null
+     * }
+     */
+    public function streamReply(
+        AiProviderConfiguration $configuration,
+        string $systemPrompt,
+        string $userPrompt,
+        callable $onChunk,
+    ): array {
+        $provider = $configuration->providerEnum();
+
+        return match ($provider) {
+            AiProvider::Ollama => $this->streamOllamaReply($configuration, $systemPrompt, $userPrompt, $onChunk),
+            AiProvider::OpenAi,
+            AiProvider::Gemini => $this->streamFallbackReply($configuration, $systemPrompt, $userPrompt, $onChunk),
         };
     }
 
@@ -440,6 +471,191 @@ class AiProviderApi
             'model' => $configuration->model ?: AiProvider::Ollama->defaultModel(),
             'response_text' => is_string($responseText) ? trim($responseText) : null,
         ];
+    }
+
+    /**
+     * Stream an Ollama response as it is generated.
+     *
+     * @param  callable(string): void  $onChunk
+     * @return array{
+     *     valid: bool,
+     *     provider: string,
+     *     provider_label: string,
+     *     description: string,
+     *     setup_url: string,
+     *     model?: string|null,
+     *     response_text?: string|null,
+     *     failure_reason?: string|null
+     * }
+     */
+    private function streamOllamaReply(
+        AiProviderConfiguration $configuration,
+        string $systemPrompt,
+        string $userPrompt,
+        callable $onChunk,
+    ): array {
+        $baseUrl = rtrim((string) ($configuration->base_url ?: AiProvider::Ollama->defaultBaseUrl()), '/');
+
+        try {
+            $response = Http::baseUrl($baseUrl)
+                ->acceptJson()
+                ->withOptions([
+                    'stream' => true,
+                ])
+                ->timeout(120)
+                ->connectTimeout(10)
+                ->post('/api/chat', [
+                    'model' => $configuration->model ?: AiProvider::Ollama->defaultModel(),
+                    'stream' => true,
+                    'keep_alive' => '10m',
+                    'messages' => [
+                        ['role' => 'system', 'content' => $systemPrompt],
+                        ['role' => 'user', 'content' => $userPrompt],
+                    ],
+                ]);
+        } catch (ConnectionException $exception) {
+            return [
+                'valid' => false,
+                'provider' => AiProvider::Ollama->value,
+                'provider_label' => AiProvider::Ollama->label(),
+                'description' => 'Ollama no responde. Verifica que el servicio este instalado y corriendo. Si aun no lo tienes, instalalo desde la pagina oficial.',
+                'setup_url' => AiProvider::Ollama->setupUrl(),
+                'failure_reason' => 'connection_failed',
+            ];
+        }
+
+        if (! $response->successful()) {
+            return [
+                'valid' => false,
+                'provider' => AiProvider::Ollama->value,
+                'provider_label' => AiProvider::Ollama->label(),
+                'description' => $this->responseDescription($response->json(), $response->body()),
+                'setup_url' => AiProvider::Ollama->setupUrl(),
+                'failure_reason' => 'api_error',
+            ];
+        }
+
+        $stream = $response->resource();
+        $buffer = '';
+        $responseText = '';
+        $failureReason = null;
+        $failureDescription = null;
+
+        while (is_resource($stream) && ! feof($stream)) {
+            $buffer .= (string) fread($stream, 8192);
+
+            while (($newlinePosition = strpos($buffer, "\n")) !== false) {
+                $line = trim(substr($buffer, 0, $newlinePosition));
+                $buffer = substr($buffer, $newlinePosition + 1);
+
+                if ($line === '') {
+                    continue;
+                }
+
+                $payload = json_decode($line, true);
+
+                if (! is_array($payload)) {
+                    continue;
+                }
+
+                $errorMessage = data_get($payload, 'error');
+
+                if (is_string($errorMessage) && filled($errorMessage)) {
+                    $failureReason = 'api_error';
+                    $failureDescription = $errorMessage;
+                    break 2;
+                }
+
+                $chunk = data_get($payload, 'message.content');
+
+                if (is_string($chunk) && filled($chunk)) {
+                    $responseText .= $chunk;
+                    $onChunk($chunk);
+                }
+
+                if (data_get($payload, 'done') === true) {
+                    break 2;
+                }
+            }
+        }
+
+        $buffer = trim($buffer);
+
+        if ($failureReason === null && $buffer !== '') {
+            $payload = json_decode($buffer, true);
+
+            if (is_array($payload)) {
+                $errorMessage = data_get($payload, 'error');
+
+                if (is_string($errorMessage) && filled($errorMessage)) {
+                    $failureReason = 'api_error';
+                    $failureDescription = $errorMessage;
+                } else {
+                    $chunk = data_get($payload, 'message.content');
+
+                    if (is_string($chunk) && filled($chunk)) {
+                        $responseText .= $chunk;
+                        $onChunk($chunk);
+                    }
+                }
+            }
+        }
+
+        if ($failureReason !== null) {
+            return [
+                'valid' => false,
+                'provider' => AiProvider::Ollama->value,
+                'provider_label' => AiProvider::Ollama->label(),
+                'description' => $failureDescription ?: 'Ollama devolvio un error durante la generacion.',
+                'setup_url' => AiProvider::Ollama->setupUrl(),
+                'model' => $configuration->model ?: AiProvider::Ollama->defaultModel(),
+                'response_text' => filled($responseText) ? $responseText : null,
+                'failure_reason' => $failureReason,
+            ];
+        }
+
+        return [
+            'valid' => filled($responseText),
+            'provider' => AiProvider::Ollama->value,
+            'provider_label' => AiProvider::Ollama->label(),
+            'description' => filled($responseText)
+                ? 'Ollama respondio correctamente.'
+                : 'Ollama no devolvio texto utilizable.',
+            'setup_url' => AiProvider::Ollama->setupUrl(),
+            'model' => $configuration->model ?: AiProvider::Ollama->defaultModel(),
+            'response_text' => filled($responseText) ? $responseText : null,
+            'failure_reason' => filled($responseText) ? null : 'missing_text',
+        ];
+    }
+
+    /**
+     * Stream a non-streaming provider by emitting the final response once.
+     *
+     * @param  callable(string): void  $onChunk
+     * @return array{
+     *     valid: bool,
+     *     provider: string,
+     *     provider_label: string,
+     *     description: string,
+     *     setup_url: string,
+     *     model?: string|null,
+     *     response_text?: string|null,
+     *     failure_reason?: string|null
+     * }
+     */
+    private function streamFallbackReply(
+        AiProviderConfiguration $configuration,
+        string $systemPrompt,
+        string $userPrompt,
+        callable $onChunk,
+    ): array {
+        $reply = $this->generateReply($configuration, $systemPrompt, $userPrompt);
+
+        if (filled($reply['response_text'] ?? null)) {
+            $onChunk((string) $reply['response_text']);
+        }
+
+        return $reply;
     }
 
     /**

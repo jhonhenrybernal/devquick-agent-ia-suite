@@ -1,12 +1,12 @@
 <?php
 
-use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\Automation\AgentController;
 use App\Http\Controllers\Automation\AiProviderController;
 use App\Http\Controllers\Automation\AutomationController;
 use App\Http\Controllers\Automation\DolibarrController;
 use App\Http\Controllers\Automation\TelegramController;
 use App\Http\Controllers\Automation\TelegramWebhookController;
+use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\Teams\TeamInvitationController;
 use App\Http\Middleware\EnsureTeamMembership;
 use Illuminate\Foundation\Http\Middleware\PreventRequestForgery;
@@ -31,6 +31,7 @@ Route::prefix('{current_team}/automation')
         Route::get('ai-provider', [AiProviderController::class, 'edit'])->name('ai-provider.edit');
         Route::patch('ai-provider', [AiProviderController::class, 'update'])->name('ai-provider.update');
         Route::post('ai-provider/test', [AiProviderController::class, 'testConnection'])->name('ai-provider.test');
+        Route::get('ai-provider/stream', [AiProviderController::class, 'stream'])->name('ai-provider.stream');
         Route::get('telegram', [TelegramController::class, 'edit'])->name('telegram.edit');
         Route::get('telegram/inbox', [TelegramController::class, 'inbox'])->name('telegram.inbox');
         Route::patch('telegram', [TelegramController::class, 'update'])->name('telegram.update');

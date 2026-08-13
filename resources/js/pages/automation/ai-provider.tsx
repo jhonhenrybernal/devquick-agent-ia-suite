@@ -12,6 +12,7 @@ import {
 } from '@/actions/App/Http/Controllers/Automation/AutomationController';
 import {
     edit as aiProviderEdit,
+    stream as streamAiProvider,
     testConnection,
     update as updateAiProvider,
 } from '@/actions/App/Http/Controllers/Automation/AiProviderController';
@@ -30,6 +31,8 @@ import {
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
+import { useEffect, useRef, useState } from 'react';
 import type {
     AiProviderConfiguration,
     AiProviderOption,
@@ -48,6 +51,114 @@ export default function AiProvider({
     currentTeam,
 }: Props) {
     const teamSlug = currentTeam?.slug;
+    const eventSourceRef = useRef<EventSource | null>(null);
+    const [streamPrompt, setStreamPrompt] = useState(
+        'Responde en espanol con una frase breve y confirma que estas escuchando.',
+    );
+    const [streamStatus, setStreamStatus] = useState<
+        'idle' | 'connecting' | 'streaming' | 'done' | 'error'
+    >('idle');
+    const [streamMessage, setStreamMessage] = useState('');
+
+    useEffect(() => {
+        return () => {
+            eventSourceRef.current?.close();
+        };
+    }, []);
+
+    const stopStream = (): void => {
+        eventSourceRef.current?.close();
+        eventSourceRef.current = null;
+    };
+
+    const startStream = (): void => {
+        if (!teamSlug) {
+            return;
+        }
+
+        stopStream();
+        setStreamMessage('');
+        setStreamStatus('connecting');
+
+        const streamUrl = streamAiProvider.url(teamSlug, {
+            query: {
+                prompt: streamPrompt,
+            },
+        });
+
+        const source = new EventSource(streamUrl);
+        eventSourceRef.current = source;
+
+        source.onopen = () => {
+            setStreamStatus('streaming');
+        };
+
+        source.onmessage = (event) => {
+            try {
+                const payload = JSON.parse(event.data) as {
+                    type?: string;
+                    content?: string;
+                    message?: string;
+                    responseText?: string;
+                    reason?: string | null;
+                };
+
+                if (payload.type === 'chunk' && payload.content) {
+                    setStreamMessage((current) => current + payload.content);
+
+                    return;
+                }
+
+                if (payload.type === 'status' && payload.message) {
+                    setStreamStatus('streaming');
+                    setStreamMessage((current) => (
+                        current === '' ? `${payload.message}\n` : current
+                    ));
+
+                    return;
+                }
+
+                if (payload.type === 'error') {
+                    setStreamStatus('error');
+                    setStreamMessage(
+                        payload.message
+                            ? `Error: ${payload.message}`
+                            : 'Error desconocido en el stream.',
+                    );
+                    stopStream();
+
+                    return;
+                }
+
+                if (payload.type === 'done') {
+                    if (payload.responseText) {
+                        setStreamMessage(payload.responseText);
+                    }
+
+                    setStreamStatus('done');
+                    stopStream();
+                }
+            } catch {
+                if (event.data === '[DONE]') {
+                    setStreamStatus('done');
+                    stopStream();
+                    return;
+                }
+
+                setStreamMessage((current) => current + event.data);
+            }
+        };
+
+        source.onerror = () => {
+            setStreamStatus('error');
+            setStreamMessage((current) => (
+                current === ''
+                    ? 'La conexion en vivo se corto antes de completar la respuesta.'
+                    : current
+            ));
+            stopStream();
+        };
+    };
 
     return (
         <>
@@ -375,6 +486,68 @@ export default function AiProvider({
                                                 </a>
                                             </Button>
                                         </div>
+                                    </div>
+                                </div>
+
+                                <div className="space-y-3 rounded-2xl border bg-background/80 p-4">
+                                    <div className="space-y-1">
+                                        <p className="font-medium">Live Ollama stream</p>
+                                        <p className="text-sm text-muted-foreground">
+                                            Abre una conexion SSE para ver la respuesta mientras se genera.
+                                        </p>
+                                    </div>
+
+                                    <div className="grid gap-2">
+                                        <Label htmlFor="stream_prompt">
+                                            Prompt de prueba
+                                        </Label>
+                                        <Textarea
+                                            id="stream_prompt"
+                                            value={streamPrompt}
+                                            onChange={(event) => setStreamPrompt(event.target.value)}
+                                            rows={4}
+                                            placeholder="Escribe un prompt corto para probar el stream..."
+                                        />
+                                    </div>
+
+                                    <div className="flex flex-wrap gap-2">
+                                        <Button
+                                            type="button"
+                                            onClick={startStream}
+                                            disabled={!teamSlug || streamStatus === 'connecting' || streamStatus === 'streaming'}
+                                        >
+                                            Escuchar stream
+                                        </Button>
+                                        <Button
+                                            type="button"
+                                            variant="outline"
+                                            onClick={stopStream}
+                                            disabled={streamStatus === 'idle'}
+                                        >
+                                            Detener
+                                        </Button>
+                                    </div>
+
+                                    <div className="rounded-xl border bg-muted/10 p-3">
+                                        <div className="flex items-center justify-between gap-3">
+                                            <p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
+                                                Estado
+                                            </p>
+                                            <Badge variant="secondary" className="rounded-full">
+                                                {streamStatus === 'connecting'
+                                                    ? 'Conectando'
+                                                    : streamStatus === 'streaming'
+                                                        ? 'Escuchando'
+                                                        : streamStatus === 'done'
+                                                            ? 'Completado'
+                                                            : streamStatus === 'error'
+                                                                ? 'Error'
+                                                                : 'Listo'}
+                                            </Badge>
+                                        </div>
+                                        <pre className="mt-3 whitespace-pre-wrap text-sm leading-6">
+                                            {streamMessage || 'Aun no hay respuesta en vivo.'}
+                                        </pre>
                                     </div>
                                 </div>
                             </CardContent>
