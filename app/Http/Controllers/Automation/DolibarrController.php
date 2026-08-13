@@ -24,7 +24,7 @@ class DolibarrController extends Controller
         return Inertia::render('automation/dolibarr', [
             'dolibarrConfiguration' => [
                 'apiLogin' => old('api_login', $configuration?->api_login),
-                'apiPassword' => old('api_password'),
+                'apiPassword' => old('api_password', $configuration?->api_password),
                 'apiUrl' => old('api_url', $configuration?->api_url),
                 'hasApiLogin' => filled($configuration?->api_login),
                 'hasApiPassword' => filled($configuration?->api_password),

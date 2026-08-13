@@ -157,7 +157,7 @@ export default function Dolibarr({
                                                 <PasswordInput
                                                     id="api_password"
                                                     name="api_password"
-                                                    defaultValue=""
+                                                    defaultValue={dolibarrConfiguration.apiPassword ?? ''}
                                                     autoComplete="new-password"
                                                     placeholder="Escribe la contrasena de Dolibarr"
                                                 />

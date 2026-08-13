@@ -5,6 +5,7 @@ use App\Models\Team;
 use App\Models\User;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Http;
+use Inertia\Testing\AssertableInertia as Assert;
 
 test('dolibarr configuration can be saved for a team', function () {
     Http::preventStrayRequests();
@@ -78,7 +79,11 @@ test('dolibarr edit page exposes the official setup guide', function () {
         ->get(route('automation.dolibarr.edit', $team))
         ->assertOk()
         ->assertSee('Module_Web_Services_API_REST')
-        ->assertSee('apiLogin');
+        ->assertSee('apiLogin')
+        ->assertInertia(fn (Assert $page) => $page
+            ->component('automation/dolibarr')
+            ->where('dolibarrConfiguration.apiPassword', 'dolibarr-password')
+        );
 });
 
 test('dolibarr connection can be validated', function () {
