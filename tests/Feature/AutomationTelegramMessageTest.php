@@ -4,12 +4,12 @@ use App\Actions\Automation\SendTelegramMessage;
 use App\Enums\AiProvider;
 use App\Enums\TeamRole;
 use App\Models\AutomationAgent;
-use App\Models\TelegramInboundMessage;
 use App\Models\Team;
+use App\Models\TelegramInboundMessage;
 use App\Models\User;
 use App\Notifications\Automation\TelegramMessageNotification;
-use Illuminate\Support\Facades\Http;
 use Illuminate\Notifications\AnonymousNotifiable;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Notification;
 use NotificationChannels\Telegram\TelegramMessage;
 
@@ -163,7 +163,7 @@ test('telegram send test shows a clear invalid chat id error', function () {
     $this->mock(SendTelegramMessage::class, function ($mock) {
         $mock->shouldReceive('handle')
             ->once()
-            ->andThrow(new \RuntimeException("Forbidden: the bot can't send messages to the bot"));
+            ->andThrow(new RuntimeException("Forbidden: the bot can't send messages to the bot"));
     });
 
     $response = $this
@@ -287,7 +287,7 @@ test('telegram webhook can sync an llm reply back to telegram', function () {
         TelegramMessageNotification $notification,
         array $channels,
         AnonymousNotifiable $notifiable,
-    ) use ($team): bool {
+    ): bool {
         expect($channels)->toContain('telegram');
         expect($notifiable->routeNotificationFor('telegram'))->toBe('123456789');
 
@@ -309,6 +309,107 @@ test('telegram webhook can sync an llm reply back to telegram', function () {
         'chat_id' => '123456789',
         'from_username' => 'Automation orchestrator',
         'message_text' => 'Listo, voy a preparar la factura mensual.',
+    ]);
+});
+
+test('telegram webhook can stream an ollama reply back to telegram', function () {
+    Notification::fake();
+
+    Http::fake([
+        'http://localhost:11434/api/chat*' => Http::response(
+            "{\"message\":{\"content\":\"Hola\"},\"done\":false}\n{\"message\":{\"content\":\", ya estoy escuchando.\"},\"done\":true}\n",
+            200,
+        ),
+    ]);
+
+    $owner = User::factory()->create();
+    $team = Team::factory()->create();
+    $team->members()->attach($owner, ['role' => TeamRole::Owner->value]);
+
+    $team->telegramConfiguration()->create([
+        'bot_token' => 'telegram-bot-token',
+        'chat_id' => '123456789',
+        'webhook_secret' => 'telegram-webhook-secret',
+        'is_enabled' => true,
+    ]);
+
+    $team->aiProviderConfiguration()->create([
+        'provider' => AiProvider::Ollama->value,
+        'model' => 'llama3.1',
+        'base_url' => 'http://localhost:11434',
+        'is_enabled' => true,
+    ]);
+
+    $parentAgent = AutomationAgent::factory()
+        ->for($team)
+        ->create([
+            'name' => 'Automation orchestrator',
+            'target_tool' => 'route_task',
+            'is_enabled' => true,
+        ]);
+
+    AutomationAgent::factory()
+        ->for($team)
+        ->childOf($parentAgent)
+        ->create([
+            'name' => 'Monthly billing agent',
+            'target_tool' => 'create_invoice',
+            'instructions' => 'Create the monthly invoice and validate the customer.',
+            'is_enabled' => true,
+        ]);
+
+    $response = $this
+        ->postJson(route('automation.telegram.webhook', $team), [
+            'update_id' => 912345704,
+            'message' => [
+                'message_id' => 81,
+                'chat' => [
+                    'id' => 123456789,
+                    'type' => 'private',
+                ],
+                'from' => [
+                    'id' => 555,
+                    'username' => 'jhonh',
+                ],
+                'text' => 'Hola, probando el agente.',
+            ],
+        ], [
+            'X-Telegram-Bot-Api-Secret-Token' => 'telegram-webhook-secret',
+        ]);
+
+    $response->assertNoContent();
+
+    Notification::assertSentOnDemand(TelegramMessageNotification::class, function (
+        TelegramMessageNotification $notification,
+        array $channels,
+        AnonymousNotifiable $notifiable,
+    ): bool {
+        expect($channels)->toContain('telegram');
+        expect($notifiable->routeNotificationFor('telegram'))->toBe('123456789');
+
+        return $notification->botToken === 'telegram-bot-token'
+            && $notification->chatId === '123456789'
+            && $notification->content === 'Hola, ya estoy escuchando.';
+    });
+
+    $inboundMessage = TelegramInboundMessage::query()
+        ->where('team_id', $team->id)
+        ->where('direction', 'inbound')
+        ->where('update_id', 912345704)
+        ->first();
+
+    expect($inboundMessage)->not->toBeNull();
+    expect(data_get($inboundMessage?->payload, 'sync.status'))->toBe('sent');
+    expect(data_get($inboundMessage?->payload, 'sync.mode'))->toBe('ai');
+    expect(data_get($inboundMessage?->payload, 'sync.provider'))->toBe('ollama');
+    expect(data_get($inboundMessage?->payload, 'sync.response_text'))->toBe('Hola, ya estoy escuchando.');
+
+    $this->assertDatabaseHas('telegram_inbound_messages', [
+        'team_id' => $team->id,
+        'direction' => 'outbound',
+        'chat_id' => '123456789',
+        'from_username' => 'Automation orchestrator',
+        'message_text' => 'Hola, ya estoy escuchando.',
     ]);
 });
 
@@ -371,7 +472,7 @@ test('telegram webhook keeps the sync status when telegram delivery fails', func
     $this->mock(SendTelegramMessage::class, function ($mock) {
         $mock->shouldReceive('handle')
             ->once()
-            ->andThrow(new \RuntimeException('Forbidden: the bot cannot send messages to this chat.'));
+            ->andThrow(new RuntimeException('Forbidden: the bot cannot send messages to this chat.'));
     });
 
     $response = $this

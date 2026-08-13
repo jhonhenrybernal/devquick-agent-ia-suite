@@ -6,10 +6,10 @@ use App\Actions\Automation\SendTelegramMessage;
 use App\Models\AiProviderConfiguration;
 use App\Models\AutomationAgent;
 use App\Models\DolibarrConfiguration;
-use App\Models\TelegramInboundMessage;
 use App\Models\Team;
-use App\Services\Dolibarr\DolibarrApi;
+use App\Models\TelegramInboundMessage;
 use App\Services\AiProvider\AiProviderApi;
+use App\Services\Dolibarr\DolibarrApi;
 use Illuminate\Support\Facades\Log;
 use Throwable;
 
@@ -19,8 +19,7 @@ class TelegramConversationSyncService
         private readonly AiProviderApi $aiProviderApi,
         private readonly DolibarrApi $dolibarrApi,
         private readonly SendTelegramMessage $sendTelegramMessage,
-    ) {
-    }
+    ) {}
 
     /**
      * Process an inbound Telegram message and, when possible, generate a reply.
@@ -110,13 +109,20 @@ class TelegramConversationSyncService
         $systemPrompt = $this->systemPrompt($parentAgent, $billingAgent);
         $userPrompt = $this->userPrompt($inboundMessage);
 
-        $reply = $this->aiProviderApi->generateReply(
+        $responseText = '';
+
+        $reply = $this->aiProviderApi->streamReply(
             $aiProviderConfiguration,
             $systemPrompt,
             $userPrompt,
+            function (string $chunk) use (&$responseText): void {
+                $responseText .= $chunk;
+            },
         );
 
-        if (! $reply['valid'] || blank($reply['response_text'] ?? null)) {
+        $responseText = trim((string) ($reply['response_text'] ?? $responseText));
+
+        if (! $reply['valid'] || blank($responseText)) {
             Log::warning('Telegram AI reply could not be generated.', [
                 'team_id' => $team->id,
                 'team_slug' => $team->slug,
@@ -138,8 +144,6 @@ class TelegramConversationSyncService
                 ],
             );
         }
-
-        $responseText = trim((string) $reply['response_text']);
 
         $telegramConfiguration = $team->telegramConfiguration;
 
