@@ -630,7 +630,7 @@ test('team members cannot access automation settings', function () {
     $response->assertForbidden();
 });
 
-test('admin seeder creates the default parent and billing agents', function () {
+test('admin seeder creates the default automation, billing and DIAN agents', function () {
     $this->seed(AdminUserSeeder::class);
 
     $admin = User::query()->firstWhere('email', 'admin@example.com');
@@ -658,4 +658,73 @@ test('admin seeder creates the default parent and billing agents', function () {
 
     expect($billingAgent)->not->toBeNull();
     expect($billingAgent?->name)->toBe('Monthly billing agent');
+
+    $dianAgent = AutomationAgent::query()
+        ->where('team_id', $team?->id)
+        ->where('parent_agent_id', $parentAgent?->id)
+        ->where('target_tool', 'dian_tax_review')
+        ->first();
+
+    expect($dianAgent)->not->toBeNull();
+    expect($dianAgent?->name)->toBe('DIAN compliance agent');
+
+    $trainingAgent = AutomationAgent::query()
+        ->where('team_id', $team?->id)
+        ->where('parent_agent_id', $parentAgent?->id)
+        ->where('target_tool', 'dian_training')
+        ->first();
+
+    expect($trainingAgent)->not->toBeNull();
+    expect($trainingAgent?->name)->toBe('DIAN training curator');
+});
+
+test('dian automation workspace can be rendered by team owners', function () {
+    $user = User::factory()->create();
+    $team = Team::factory()->create();
+
+    $team->members()->attach($user, ['role' => TeamRole::Owner->value]);
+
+    $parentAgent = $team->automationAgents()->create([
+        'parent_agent_id' => null,
+        'name' => 'Automation orchestrator',
+        'description' => 'Routes incoming tasks.',
+        'instructions' => 'Route the task to the right child.',
+        'trigger_keyword' => 'route task',
+        'target_tool' => 'route_task',
+        'is_enabled' => true,
+    ]);
+
+    $team->automationAgents()->create([
+        'parent_agent_id' => $parentAgent->id,
+        'name' => 'DIAN compliance agent',
+        'description' => 'DIAN tax review agent.',
+        'instructions' => 'Review tax obligations and deadlines.',
+        'trigger_keyword' => 'dian tax',
+        'target_tool' => 'dian_tax_review',
+        'is_enabled' => true,
+    ]);
+
+    $team->automationAgents()->create([
+        'parent_agent_id' => $parentAgent->id,
+        'name' => 'DIAN training curator',
+        'description' => 'Curates approved corrections.',
+        'instructions' => 'Capture corrections and normalize them.',
+        'trigger_keyword' => 'dian training',
+        'target_tool' => 'dian_training',
+        'is_enabled' => true,
+    ]);
+
+    $response = $this
+        ->actingAs($user)
+        ->get(route('automation.dian', $team));
+
+    $response
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->component('automation/dian')
+            ->where('agentCount', 3)
+            ->where('readyCount', 3)
+            ->where('operationalAgent.name', 'DIAN compliance agent')
+            ->where('trainingAgent.name', 'DIAN training curator')
+        );
 });

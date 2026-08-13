@@ -34,6 +34,12 @@ export type TelegramInboundMessage = {
     syncProvider?: string | null;
     syncModel?: string | null;
     syncTool?: string | null;
+    trainingStatus?: 'pending' | 'approved' | 'rejected' | null;
+    trainingKind?: string | null;
+    trainingLabel?: string | null;
+    trainingContent?: string | null;
+    trainingCapturedAt?: string | null;
+    trainingUpdatedAt?: string | null;
     createdAt?: string | null;
 };
 
@@ -73,6 +79,13 @@ export type AiProviderOption = {
 export type AutomationSummary = {
     total: number;
     enabled: number;
+};
+
+export type TelegramTrainingSummary = {
+    total: number;
+    pending: number;
+    approved: number;
+    rejected: number;
 };
 
 export type AutomationDolibarrSummary = {

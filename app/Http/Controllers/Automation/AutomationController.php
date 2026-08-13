@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Automation;
 
 use App\Enums\AiProvider;
 use App\Http\Controllers\Controller;
+use App\Models\AutomationAgent;
 use App\Models\Team;
 use App\Services\Dolibarr\DolibarrApi;
 use Inertia\Inertia;
@@ -11,6 +12,28 @@ use Inertia\Response;
 
 class AutomationController extends Controller
 {
+    /**
+     * Map an automation agent for the overview pages.
+     *
+     * @return array<string, mixed>
+     */
+    private function mapAgent(AutomationAgent $agent): array
+    {
+        return [
+            'id' => $agent->id,
+            'name' => $agent->name,
+            'description' => $agent->description,
+            'instructions' => $agent->instructions,
+            'triggerKeyword' => $agent->trigger_keyword,
+            'targetTool' => $agent->target_tool,
+            'isEnabled' => $agent->is_enabled,
+            'parentAgentId' => $agent->parent_agent_id,
+            'parentAgentName' => $agent->parentAgent?->name,
+            'childAgentsCount' => $agent->child_agents_count,
+            'createdAt' => $agent->created_at?->toISOString(),
+        ];
+    }
+
     /**
      * Display the automation overview.
      */
@@ -50,6 +73,47 @@ class AutomationController extends Controller
                 'hasApiKey' => filled($aiProviderConfiguration?->api_key),
                 'setupUrl' => $aiProvider->setupUrl(),
                 'isLocal' => $aiProvider->isLocal(),
+            ],
+        ]);
+    }
+
+    /**
+     * Display the DIAN automation workspace.
+     */
+    public function dian(Team $current_team): Response
+    {
+        $agents = $current_team->automationAgents()
+            ->with(['parentAgent'])
+            ->withCount('childAgents')
+            ->whereIn('target_tool', [
+                'route_task',
+                'dian_tax_review',
+                'dian_training',
+            ])
+            ->orderByRaw('case when parent_agent_id is null then 0 else 1 end')
+            ->orderBy('id')
+            ->get();
+
+        $parentAgent = $agents->firstWhere('target_tool', 'route_task');
+        $operationalAgent = $agents->firstWhere('target_tool', 'dian_tax_review');
+        $trainingAgent = $agents->firstWhere('target_tool', 'dian_training');
+
+        return Inertia::render('automation/dian', [
+            'parentAgent' => $parentAgent instanceof AutomationAgent
+                ? $this->mapAgent($parentAgent)
+                : null,
+            'operationalAgent' => $operationalAgent instanceof AutomationAgent
+                ? $this->mapAgent($operationalAgent)
+                : null,
+            'trainingAgent' => $trainingAgent instanceof AutomationAgent
+                ? $this->mapAgent($trainingAgent)
+                : null,
+            'agentCount' => $agents->count(),
+            'readyCount' => $agents->where('is_enabled', true)->count(),
+            'checklist' => [
+                'Capturar correcciones del contador en Telegram o en la pagina interna.',
+                'Normalizar la regla en un resumen claro y aprobado.',
+                'Publicar la instruccion en el agente operativo solo cuando ya este validada.',
             ],
         ]);
     }

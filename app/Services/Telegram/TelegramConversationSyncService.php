@@ -42,6 +42,12 @@ class TelegramConversationSyncService
             );
         }
 
+        $trainingIntent = $this->detectTrainingIntent((string) $inboundMessage->message_text);
+
+        if ($trainingIntent !== null) {
+            return $this->handleTrainingIntent($team, $inboundMessage, $trainingIntent);
+        }
+
         $selectedAgents = $this->selectedAgents($team);
 
         if ($selectedAgents === null) {
@@ -339,6 +345,129 @@ class TelegramConversationSyncService
         }
 
         return [$parentAgent, $billingAgent];
+    }
+
+    /**
+     * @return array{kind: string, label: string, content: string}|null
+     */
+    private function detectTrainingIntent(string $messageText): ?array
+    {
+        $trimmedMessage = trim($messageText);
+
+        if ($trimmedMessage === '') {
+            return null;
+        }
+
+        if (! preg_match('/^\s*#(?P<tag>regla|correccion|ejemplo|train|aprendizaje)\b[\s:,-]*(?P<content>.*)$/iu', $trimmedMessage, $matches)) {
+            return null;
+        }
+
+        $tag = mb_strtolower((string) ($matches['tag'] ?? ''));
+        $content = trim((string) ($matches['content'] ?? ''));
+
+        return [
+            'kind' => match ($tag) {
+                'regla' => 'rule',
+                'correccion' => 'correction',
+                'ejemplo' => 'example',
+                'train' => 'training',
+                'aprendizaje' => 'learning',
+                default => 'training',
+            },
+            'label' => match ($tag) {
+                'regla' => 'Regla',
+                'correccion' => 'Correccion',
+                'ejemplo' => 'Ejemplo',
+                'train' => 'Entrenamiento',
+                'aprendizaje' => 'Aprendizaje',
+                default => 'Entrenamiento',
+            },
+            'content' => $content !== '' ? $content : trim($trimmedMessage),
+        ];
+    }
+
+    /**
+     * @param  array{kind: string, label: string, content: string}  $trainingIntent
+     */
+    private function handleTrainingIntent(
+        Team $team,
+        TelegramInboundMessage $inboundMessage,
+        array $trainingIntent,
+    ): array {
+        $trainingAgent = $team->automationAgents()
+            ->where('target_tool', 'dian_training')
+            ->where('is_enabled', true)
+            ->orderBy('id')
+            ->first();
+
+        $operationalAgent = $team->automationAgents()
+            ->where('target_tool', 'dian_tax_review')
+            ->where('is_enabled', true)
+            ->orderBy('id')
+            ->first();
+
+        $responseText = sprintf(
+            'Recibido como %s. Lo dejare en la bandeja de entrenamiento para revisarlo.',
+            mb_strtolower($trainingIntent['label']),
+        );
+
+        $telegramConfiguration = $team->telegramConfiguration;
+
+        if ($telegramConfiguration) {
+            try {
+                $this->sendTelegramMessage->handle(
+                    $telegramConfiguration,
+                    $responseText,
+                    $inboundMessage->chat_id,
+                    [
+                        'update_type' => 'assistant_message',
+                        'from_username' => $trainingAgent?->name ?? 'DevQuick Assistant',
+                        'generated_by' => [
+                            'mode' => 'training',
+                            'kind' => $trainingIntent['kind'],
+                            'label' => $trainingIntent['label'],
+                            'inbound_message_id' => $inboundMessage->id,
+                            'training_agent_id' => $trainingAgent?->id,
+                            'operational_agent_id' => $operationalAgent?->id,
+                        ],
+                    ],
+                );
+            } catch (Throwable $exception) {
+                Log::warning('Telegram training acknowledgement could not be delivered.', [
+                    'team_id' => $team->id,
+                    'team_slug' => $team->slug,
+                    'inbound_message_id' => $inboundMessage->id,
+                    'chat_id' => $inboundMessage->chat_id,
+                    'description' => $exception->getMessage(),
+                ]);
+            }
+        }
+
+        Log::info('Telegram training message stored.', [
+            'team_id' => $team->id,
+            'team_slug' => $team->slug,
+            'inbound_message_id' => $inboundMessage->id,
+            'training_kind' => $trainingIntent['kind'],
+            'training_label' => $trainingIntent['label'],
+        ]);
+
+        return $this->finalizeSyncResult($inboundMessage, [
+            'synced' => true,
+            'description' => sprintf('Telegram training message captured as %s.', $trainingIntent['kind']),
+            'response_text' => $responseText,
+        ], [
+            'status' => 'sent',
+            'mode' => 'training',
+            'reason' => sprintf('training_%s', $trainingIntent['kind']),
+            'training' => [
+                'status' => 'pending',
+                'kind' => $trainingIntent['kind'],
+                'label' => $trainingIntent['label'],
+                'content' => $trainingIntent['content'],
+                'captured_at' => now()->toISOString(),
+                'source' => 'telegram',
+            ],
+        ]);
     }
 
     private function systemPrompt(AutomationAgent $parentAgent, AutomationAgent $billingAgent): string

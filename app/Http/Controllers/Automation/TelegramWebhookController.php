@@ -3,9 +3,11 @@
 namespace App\Http\Controllers\Automation;
 
 use App\Http\Controllers\Controller;
+use App\Jobs\ProcessTelegramInboundMessage;
 use App\Models\Team;
-use App\Services\Telegram\TelegramConversationSyncService;
+use Illuminate\Database\QueryException;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Symfony\Component\HttpFoundation\Response;
 
@@ -17,9 +19,7 @@ class TelegramWebhookController extends Controller
     public function __invoke(
         Request $request,
         Team $current_team,
-        TelegramConversationSyncService $telegramConversationSyncService,
-    ): Response
-    {
+    ): Response {
         $telegramConfiguration = $current_team->telegramConfiguration;
 
         if (
@@ -51,6 +51,47 @@ class TelegramWebhookController extends Controller
         }
 
         $payload = $request->all();
+        $updateId = data_get($payload, 'update_id');
+
+        $telegramUpdateId = null;
+        $telegramWebhookLockOwner = null;
+
+        if (is_int($updateId) || is_string($updateId)) {
+            $telegramUpdateId = (int) $updateId;
+
+            $alreadyProcessed = $current_team->telegramInboundMessages()
+                ->where('direction', 'inbound')
+                ->where('update_id', $telegramUpdateId)
+                ->exists();
+
+            if ($alreadyProcessed) {
+                Log::info('Telegram webhook ignored duplicate update.', [
+                    'team_id' => $current_team->id,
+                    'team_slug' => $current_team->slug,
+                    'update_id' => $telegramUpdateId,
+                ]);
+
+                return response()->noContent();
+            }
+
+            $telegramWebhookLock = Cache::lock(
+                $this->webhookLockKey($current_team->id, $telegramUpdateId),
+                300,
+            );
+
+            if (! $telegramWebhookLock->get()) {
+                Log::info('Telegram webhook ignored locked update.', [
+                    'team_id' => $current_team->id,
+                    'team_slug' => $current_team->slug,
+                    'update_id' => $telegramUpdateId,
+                ]);
+
+                return response()->noContent();
+            }
+
+            $telegramWebhookLockOwner = $telegramWebhookLock->owner();
+        }
+
         $updateType = $this->updateType($payload);
         $chatId = $this->chatIdFromPayload($payload);
         $fromUserId = $this->fromUserId($payload);
@@ -60,7 +101,7 @@ class TelegramWebhookController extends Controller
         Log::info('Telegram webhook received.', [
             'team_id' => $current_team->id,
             'team_slug' => $current_team->slug,
-            'update_id' => data_get($payload, 'update_id'),
+            'update_id' => $updateId,
             'update_type' => $updateType,
             'chat_id' => $chatId,
             'from_user_id' => $fromUserId,
@@ -68,16 +109,42 @@ class TelegramWebhookController extends Controller
             'message_text' => $messageText,
         ]);
 
-        $message = $current_team->telegramInboundMessages()->create([
-            'direction' => 'inbound',
-            'update_id' => data_get($payload, 'update_id'),
-            'update_type' => $updateType,
-            'chat_id' => $chatId,
-            'from_user_id' => $fromUserId,
-            'from_username' => $fromUsername,
-            'message_text' => $messageText,
-            'payload' => $payload,
-        ]);
+        try {
+            $message = $current_team->telegramInboundMessages()->create([
+                'direction' => 'inbound',
+                'update_id' => $updateId,
+                'update_type' => $updateType,
+                'chat_id' => $chatId,
+                'from_user_id' => $fromUserId,
+                'from_username' => $fromUsername,
+                'message_text' => $messageText,
+                'payload' => $payload,
+            ]);
+        } catch (QueryException $exception) {
+            if ($this->isDuplicateWebhookMessage($exception)) {
+                $this->releaseWebhookLock(
+                    $current_team->id,
+                    $telegramUpdateId,
+                    $telegramWebhookLockOwner,
+                );
+
+                Log::info('Telegram webhook ignored duplicate insert.', [
+                    'team_id' => $current_team->id,
+                    'team_slug' => $current_team->slug,
+                    'update_id' => $telegramUpdateId,
+                ]);
+
+                return response()->noContent();
+            }
+
+            $this->releaseWebhookLock(
+                $current_team->id,
+                $telegramUpdateId,
+                $telegramWebhookLockOwner,
+            );
+
+            throw $exception;
+        }
 
         Log::info('Telegram inbound message stored.', [
             'team_id' => $current_team->id,
@@ -87,17 +154,49 @@ class TelegramWebhookController extends Controller
             'chat_id' => $message->chat_id,
         ]);
 
-        $syncResult = $telegramConversationSyncService->handle($current_team, $message);
+        ProcessTelegramInboundMessage::dispatchAfterResponse(
+            $current_team->id,
+            $message->id,
+            $telegramUpdateId ?? 0,
+            $telegramWebhookLockOwner ?? '',
+        );
 
-        Log::info('Telegram AI sync result.', [
+        Log::info('Telegram inbound message queued for processing.', [
             'team_id' => $current_team->id,
             'team_slug' => $current_team->slug,
             'inbound_message_id' => $message->id,
-            'synced' => $syncResult['synced'],
-            'description' => $syncResult['description'],
         ]);
 
         return response()->noContent();
+    }
+
+    private function webhookLockKey(int $teamId, int $updateId): string
+    {
+        return sprintf('telegram:webhook:%d:%d', $teamId, $updateId);
+    }
+
+    private function releaseWebhookLock(
+        int $teamId,
+        ?int $updateId,
+        ?string $telegramWebhookLockOwner,
+    ): void {
+        if ($updateId === null || blank($telegramWebhookLockOwner)) {
+            return;
+        }
+
+        Cache::restoreLock(
+            $this->webhookLockKey($teamId, $updateId),
+            $telegramWebhookLockOwner,
+        )->release();
+    }
+
+    private function isDuplicateWebhookMessage(QueryException $exception): bool
+    {
+        $message = mb_strtolower($exception->getMessage());
+
+        return str_contains($message, 'unique constraint failed')
+            || str_contains($message, 'duplicate')
+            || str_contains($message, 'telegram_inbound_messages_team_id_direction_update_id_unique');
     }
 
     /**

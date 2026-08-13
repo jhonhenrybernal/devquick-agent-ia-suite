@@ -4,6 +4,9 @@ import {
     index as automationIndex,
 } from '@/actions/App/Http/Controllers/Automation/AutomationController';
 import {
+    dian as dianAutomation,
+} from '@/actions/App/Http/Controllers/Automation/AutomationController';
+import {
     destroy as destroyAgent,
     index as agentsIndex,
     show as showAgent,
@@ -209,6 +212,11 @@ export default function Agents({ agents, currentTeam }: Props) {
                         <Button variant="outline" asChild>
                             <Link href={teamSlug ? automationIndex.url(teamSlug) : '#'}>
                                 Volver al hub
+                            </Link>
+                        </Button>
+                        <Button variant="outline" asChild>
+                            <Link href={teamSlug ? dianAutomation.url(teamSlug) : '#'}>
+                                Ir a DIAN
                             </Link>
                         </Button>
                         <Button asChild>

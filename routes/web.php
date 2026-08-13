@@ -25,6 +25,7 @@ Route::prefix('{current_team}/automation')
     ->name('automation.')
     ->group(function () {
         Route::get('/', [AutomationController::class, 'index'])->name('index');
+        Route::get('dian', [AutomationController::class, 'dian'])->name('dian');
         Route::get('dolibarr', [DolibarrController::class, 'edit'])->name('dolibarr.edit');
         Route::patch('dolibarr', [DolibarrController::class, 'update'])->name('dolibarr.update');
         Route::post('dolibarr/test', [DolibarrController::class, 'testConnection'])->name('dolibarr.test');
@@ -39,6 +40,8 @@ Route::prefix('{current_team}/automation')
         Route::post('telegram/detect-chat-id', [TelegramController::class, 'detectChatId'])->name('telegram.detect-chat-id');
         Route::post('telegram/sync-webhook', [TelegramController::class, 'syncWebhook'])->name('telegram.sync-webhook');
         Route::post('telegram/test', [TelegramController::class, 'testConnection'])->name('telegram.test');
+        Route::patch('telegram/inbox/{telegram_inbound_message}/training/approve', [TelegramController::class, 'approveTraining'])->name('telegram.training.approve');
+        Route::patch('telegram/inbox/{telegram_inbound_message}/training/reject', [TelegramController::class, 'rejectTraining'])->name('telegram.training.reject');
 
         Route::get('agents', [AgentController::class, 'index'])->name('agents.index');
         Route::get('agents/{automation_agent}', [AgentController::class, 'show'])->name('agents.show');

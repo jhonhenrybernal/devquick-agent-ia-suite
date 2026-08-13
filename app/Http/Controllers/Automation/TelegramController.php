@@ -6,10 +6,10 @@ use App\Actions\Automation\SendTelegramMessage;
 use App\Enums\AiProvider;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Automation\TelegramConfigurationRequest;
-use App\Models\AiProviderConfiguration;
-use App\Models\TelegramInboundMessage;
-use App\Models\TelegramConfiguration;
+use App\Models\AutomationAgent;
 use App\Models\Team;
+use App\Models\TelegramConfiguration;
+use App\Models\TelegramInboundMessage;
 use App\Services\Telegram\TelegramApi;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -44,6 +44,12 @@ class TelegramController extends Controller
             'syncProvider' => data_get($message->payload, 'sync.provider'),
             'syncModel' => data_get($message->payload, 'sync.model'),
             'syncTool' => data_get($message->payload, 'sync.tool'),
+            'trainingStatus' => data_get($message->payload, 'sync.training.status'),
+            'trainingKind' => data_get($message->payload, 'sync.training.kind'),
+            'trainingLabel' => data_get($message->payload, 'sync.training.label'),
+            'trainingContent' => data_get($message->payload, 'sync.training.content'),
+            'trainingCapturedAt' => data_get($message->payload, 'sync.training.captured_at'),
+            'trainingUpdatedAt' => data_get($message->payload, 'sync.training.updated_at'),
             'createdAt' => $message->created_at?->toISOString(),
         ];
     }
@@ -112,6 +118,11 @@ class TelegramController extends Controller
             ->limit(50)
             ->get();
 
+        $trainingPendingCount = $messages
+            ->filter(fn (TelegramInboundMessage $message): bool => data_get($message->payload, 'sync.mode') === 'training'
+                && data_get($message->payload, 'sync.training.status') === 'pending')
+            ->count();
+
         $selectedMessage = $messages->firstWhere('id', $request->integer('message'))
             ?? $messages->first();
 
@@ -122,6 +133,82 @@ class TelegramController extends Controller
                 : null,
             'selectedMessageId' => $selectedMessage?->id,
             'messageCount' => $messages->count(),
+            'trainingPendingCount' => $trainingPendingCount,
+        ]);
+    }
+
+    /**
+     * Approve a training candidate and publish it into the DIAN agent instructions.
+     */
+    public function approveTraining(
+        Team $current_team,
+        TelegramInboundMessage $telegramInboundMessage,
+    ): RedirectResponse {
+        abort_unless($telegramInboundMessage->team_id === $current_team->id, 404);
+
+        if (data_get($telegramInboundMessage->payload, 'sync.mode') !== 'training') {
+            Inertia::flash('toast', [
+                'type' => 'warning',
+                'message' => __('This message is not marked as training.'),
+            ]);
+
+            return to_route('automation.telegram.inbox', [
+                'current_team' => $current_team,
+                'message' => $telegramInboundMessage->id,
+            ]);
+        }
+
+        $trainingNote = $this->trainingNoteFromMessage($telegramInboundMessage);
+        $operationalAgent = $this->operationalDianAgent($current_team);
+
+        if ($operationalAgent instanceof AutomationAgent) {
+            $this->appendTrainingNote($operationalAgent, $trainingNote);
+        }
+
+        $this->updateTrainingStatus($telegramInboundMessage, 'approved', $trainingNote);
+
+        Inertia::flash('toast', [
+            'type' => 'success',
+            'message' => __('Training item approved and published to the DIAN agent.'),
+        ]);
+
+        return to_route('automation.telegram.inbox', [
+            'current_team' => $current_team,
+            'message' => $telegramInboundMessage->id,
+        ]);
+    }
+
+    /**
+     * Reject a training candidate without publishing it.
+     */
+    public function rejectTraining(
+        Team $current_team,
+        TelegramInboundMessage $telegramInboundMessage,
+    ): RedirectResponse {
+        abort_unless($telegramInboundMessage->team_id === $current_team->id, 404);
+
+        if (data_get($telegramInboundMessage->payload, 'sync.mode') !== 'training') {
+            Inertia::flash('toast', [
+                'type' => 'warning',
+                'message' => __('This message is not marked as training.'),
+            ]);
+
+            return to_route('automation.telegram.inbox', [
+                'current_team' => $current_team,
+                'message' => $telegramInboundMessage->id,
+            ]);
+        }
+
+        $this->updateTrainingStatus($telegramInboundMessage, 'rejected');
+
+        Inertia::flash('toast', [
+            'type' => 'success',
+            'message' => __('Training item rejected.'),
+        ]);
+
+        return to_route('automation.telegram.inbox', [
+            'current_team' => $current_team,
+            'message' => $telegramInboundMessage->id,
         ]);
     }
 
@@ -393,5 +480,69 @@ class TelegramController extends Controller
         ]);
 
         return to_route('automation.telegram.edit', $current_team);
+    }
+
+    private function operationalDianAgent(Team $current_team): ?AutomationAgent
+    {
+        return $current_team->automationAgents()
+            ->where('target_tool', 'dian_tax_review')
+            ->where('is_enabled', true)
+            ->orderBy('id')
+            ->first();
+    }
+
+    private function appendTrainingNote(AutomationAgent $agent, string $trainingNote): void
+    {
+        $instructions = trim((string) $agent->instructions);
+        $sectionTitle = 'Aprendizajes aprobados';
+        $sectionHeader = sprintf("\n\n--- %s ---\n", $sectionTitle);
+        $cleanNote = trim(preg_replace('/\s+/', ' ', $trainingNote) ?: $trainingNote);
+
+        if (str_contains($instructions, $cleanNote)) {
+            return;
+        }
+
+        if (! str_contains($instructions, $sectionTitle)) {
+            $instructions .= $sectionHeader;
+        }
+
+        $instructions .= sprintf('- %s', $cleanNote);
+        $instructions .= "\n";
+
+        $agent->forceFill([
+            'instructions' => $instructions,
+        ])->save();
+    }
+
+    private function trainingNoteFromMessage(TelegramInboundMessage $message): string
+    {
+        $label = data_get($message->payload, 'sync.training.label');
+        $content = data_get($message->payload, 'sync.training.content') ?: $message->message_text;
+
+        $parts = array_filter([
+            $label ? sprintf('%s:', $label) : null,
+            is_string($content) ? trim($content) : null,
+        ]);
+
+        return trim(implode(' ', $parts));
+    }
+
+    private function updateTrainingStatus(
+        TelegramInboundMessage $message,
+        string $status,
+        ?string $note = null,
+    ): void {
+        $payload = $message->payload;
+
+        data_set($payload, 'sync.training.status', $status);
+        data_set($payload, 'sync.training.updated_at', now()->toISOString());
+
+        if ($note !== null) {
+            data_set($payload, 'sync.training.note', $note);
+        }
+
+        $message->forceFill([
+            'payload' => $payload,
+        ])->save();
     }
 }

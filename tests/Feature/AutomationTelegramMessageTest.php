@@ -3,12 +3,14 @@
 use App\Actions\Automation\SendTelegramMessage;
 use App\Enums\AiProvider;
 use App\Enums\TeamRole;
+use App\Jobs\ProcessTelegramInboundMessage;
 use App\Models\AutomationAgent;
 use App\Models\Team;
 use App\Models\TelegramInboundMessage;
 use App\Models\User;
 use App\Notifications\Automation\TelegramMessageNotification;
 use Illuminate\Notifications\AnonymousNotifiable;
+use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Notification;
 use NotificationChannels\Telegram\TelegramMessage;
@@ -310,6 +312,220 @@ test('telegram webhook can sync an llm reply back to telegram', function () {
         'from_username' => 'Automation orchestrator',
         'message_text' => 'Listo, voy a preparar la factura mensual.',
     ]);
+});
+
+test('telegram webhook ignores duplicate updates to avoid repeated replies', function () {
+    Bus::fake();
+
+    $owner = User::factory()->create();
+    $team = Team::factory()->create();
+    $team->members()->attach($owner, ['role' => TeamRole::Owner->value]);
+
+    $team->telegramConfiguration()->create([
+        'bot_token' => 'telegram-bot-token',
+        'chat_id' => '123456789',
+        'webhook_secret' => 'telegram-webhook-secret',
+        'is_enabled' => true,
+    ]);
+
+    $team->aiProviderConfiguration()->create([
+        'provider' => AiProvider::OpenAi->value,
+        'model' => 'gpt-4.1-mini',
+        'api_key' => 'openai-api-key',
+        'is_enabled' => true,
+    ]);
+
+    $parentAgent = AutomationAgent::factory()
+        ->for($team)
+        ->create([
+            'name' => 'Automation orchestrator',
+            'target_tool' => 'route_task',
+            'is_enabled' => true,
+        ]);
+
+    AutomationAgent::factory()
+        ->for($team)
+        ->childOf($parentAgent)
+        ->create([
+            'name' => 'Monthly billing agent',
+            'target_tool' => 'create_invoice',
+            'instructions' => 'Create the monthly invoice and validate the customer.',
+            'is_enabled' => true,
+        ]);
+
+    $payload = [
+        'update_id' => 912345707,
+        'message' => [
+            'message_id' => 83,
+            'chat' => [
+                'id' => 123456789,
+                'type' => 'private',
+            ],
+            'from' => [
+                'id' => 555,
+                'username' => 'jhonh',
+            ],
+            'text' => 'Dime que capacidades puedes ayudarme a hacer',
+        ],
+    ];
+
+    $headers = [
+        'X-Telegram-Bot-Api-Secret-Token' => 'telegram-webhook-secret',
+    ];
+
+    $this->postJson(route('automation.telegram.webhook', $team), $payload, $headers)
+        ->assertNoContent();
+
+    $this->postJson(route('automation.telegram.webhook', $team), $payload, $headers)
+        ->assertNoContent();
+
+    Bus::assertDispatchedTimes(ProcessTelegramInboundMessage::class, 1);
+
+    $this->assertDatabaseCount('telegram_inbound_messages', 1);
+
+    $this->assertDatabaseHas('telegram_inbound_messages', [
+        'team_id' => $team->id,
+        'direction' => 'inbound',
+        'update_id' => 912345707,
+        'message_text' => 'Dime que capacidades puedes ayudarme a hacer',
+    ]);
+});
+
+test('telegram webhook marks hashtagged messages as training candidates', function () {
+    Notification::fake();
+
+    $owner = User::factory()->create();
+    $team = Team::factory()->create();
+    $team->members()->attach($owner, ['role' => TeamRole::Owner->value]);
+
+    $team->telegramConfiguration()->create([
+        'bot_token' => 'telegram-bot-token',
+        'chat_id' => '123456789',
+        'webhook_secret' => 'telegram-webhook-secret',
+        'is_enabled' => true,
+    ]);
+
+    $response = $this
+        ->postJson(route('automation.telegram.webhook', $team), [
+            'update_id' => 912345705,
+            'message' => [
+                'message_id' => 82,
+                'chat' => [
+                    'id' => 123456789,
+                    'type' => 'private',
+                ],
+                'from' => [
+                    'id' => 555,
+                    'username' => 'jhonh',
+                ],
+                'text' => '#regla cuando sea persona juridica, pedir NIT y periodo.',
+            ],
+        ], [
+            'X-Telegram-Bot-Api-Secret-Token' => 'telegram-webhook-secret',
+        ]);
+
+    $response->assertNoContent();
+
+    Notification::assertSentOnDemand(TelegramMessageNotification::class, function (
+        TelegramMessageNotification $notification,
+        array $channels,
+        AnonymousNotifiable $notifiable,
+    ): bool {
+        expect($channels)->toContain('telegram');
+        expect($notifiable->routeNotificationFor('telegram'))->toBe('123456789');
+
+        return $notification->botToken === 'telegram-bot-token'
+            && $notification->chatId === '123456789'
+            && $notification->content === 'Recibido como regla. Lo dejare en la bandeja de entrenamiento para revisarlo.';
+    });
+
+    $inboundMessage = TelegramInboundMessage::query()
+        ->where('team_id', $team->id)
+        ->where('direction', 'inbound')
+        ->where('update_id', 912345705)
+        ->first();
+
+    expect($inboundMessage)->not->toBeNull();
+    expect(data_get($inboundMessage?->payload, 'sync.mode'))->toBe('training');
+    expect(data_get($inboundMessage?->payload, 'sync.reason'))->toBe('training_rule');
+    expect(data_get($inboundMessage?->payload, 'sync.training.status'))->toBe('pending');
+    expect(data_get($inboundMessage?->payload, 'sync.training.kind'))->toBe('rule');
+    expect(data_get($inboundMessage?->payload, 'sync.training.label'))->toBe('Regla');
+    expect(data_get($inboundMessage?->payload, 'sync.training.content'))->toBe('cuando sea persona juridica, pedir NIT y periodo.');
+});
+
+test('telegram training candidates can be approved from the inbox', function () {
+    $owner = User::factory()->create();
+    $team = Team::factory()->create();
+    $team->members()->attach($owner, ['role' => TeamRole::Owner->value]);
+
+    $parentAgent = AutomationAgent::factory()
+        ->for($team)
+        ->create([
+            'name' => 'Automation orchestrator',
+            'target_tool' => 'route_task',
+            'is_enabled' => true,
+        ]);
+
+    $operationalAgent = AutomationAgent::factory()
+        ->for($team)
+        ->childOf($parentAgent)
+        ->create([
+            'name' => 'DIAN compliance agent',
+            'target_tool' => 'dian_tax_review',
+            'instructions' => 'Review tax obligations and deadlines.',
+            'is_enabled' => true,
+        ]);
+
+    $message = $team->telegramInboundMessages()->create([
+        'direction' => 'inbound',
+        'update_id' => 912345706,
+        'update_type' => 'message',
+        'chat_id' => '123456789',
+        'from_user_id' => '555',
+        'from_username' => 'jhonh',
+        'message_text' => '#correccion para renta pedir estados financieros.',
+        'payload' => [
+            'update_id' => 912345706,
+            'message' => [
+                'text' => '#correccion para renta pedir estados financieros.',
+            ],
+            'sync' => [
+                'status' => 'sent',
+                'mode' => 'training',
+                'reason' => 'training_correction',
+                'response_text' => 'Recibido como correccion. Lo dejare en la bandeja de entrenamiento para revisarlo.',
+                'training' => [
+                    'status' => 'pending',
+                    'kind' => 'correction',
+                    'label' => 'Correccion',
+                    'content' => 'para renta pedir estados financieros.',
+                    'captured_at' => now()->toISOString(),
+                    'source' => 'telegram',
+                ],
+            ],
+        ],
+    ]);
+
+    $response = $this
+        ->actingAs($owner)
+        ->patch(route('automation.telegram.training.approve', [
+            'current_team' => $team,
+            'telegram_inbound_message' => $message,
+        ]));
+
+    $response->assertRedirect(route('automation.telegram.inbox', [
+        'current_team' => $team,
+        'message' => $message->id,
+    ]));
+
+    $message->refresh();
+    $operationalAgent->refresh();
+
+    expect(data_get($message->payload, 'sync.training.status'))->toBe('approved');
+    expect(data_get($message->payload, 'sync.training.note'))->toBe('Correccion: para renta pedir estados financieros.');
+    expect($operationalAgent->instructions)->toContain('Aprendizajes aprobados');
+    expect($operationalAgent->instructions)->toContain('Correccion: para renta pedir estados financieros.');
 });
 
 test('telegram webhook can stream an ollama reply back to telegram', function () {

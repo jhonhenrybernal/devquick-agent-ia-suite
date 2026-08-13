@@ -2,6 +2,10 @@ import { router, Head, Link } from '@inertiajs/react';
 import { ArrowLeft, AlertTriangle, MessageSquareText, Sparkles } from 'lucide-react';
 import { useEffect } from 'react';
 import {
+    approveTraining as approveTelegramTraining,
+    rejectTraining as rejectTelegramTraining,
+} from '@/actions/App/Http/Controllers/Automation/TelegramController';
+import {
     edit as telegramEdit,
     inbox as telegramInbox,
 } from '@/actions/App/Http/Controllers/Automation/TelegramController';
@@ -15,6 +19,7 @@ type Props = {
     selectedMessage: TelegramInboundMessage | null;
     selectedMessageId?: number | null;
     messageCount: number;
+    trainingPendingCount: number;
     currentTeam?: Team | null;
 };
 
@@ -60,9 +65,27 @@ function formatSyncReason(reason?: string | null): string {
         dolibarr_not_ready: 'Dolibarr no listo',
         send_failed: 'Error al enviar',
         fallback_send_failed: 'Error al enviar respaldo',
+        training_rule: 'Entrenamiento: regla',
+        training_correction: 'Entrenamiento: correccion',
+        training_example: 'Entrenamiento: ejemplo',
+        training_learning: 'Entrenamiento: aprendizaje',
     };
 
     return friendlyReasons[reason] ?? normalizedReason;
+}
+
+function formatTrainingStatus(status?: string | null): string {
+    if (!status) {
+        return 'Sin estado';
+    }
+
+    const statuses: Record<string, string> = {
+        pending: 'Pendiente',
+        approved: 'Aprobado',
+        rejected: 'Rechazado',
+    };
+
+    return statuses[status] ?? status;
 }
 
 export default function TelegramInbox({
@@ -70,6 +93,7 @@ export default function TelegramInbox({
     selectedMessage,
     selectedMessageId,
     messageCount,
+    trainingPendingCount,
     currentTeam,
 }: Props) {
     const teamSlug = currentTeam?.slug ?? '';
@@ -81,7 +105,7 @@ export default function TelegramInbox({
             }
 
             router.reload({
-                only: ['messages', 'selectedMessage', 'selectedMessageId', 'messageCount'],
+                only: ['messages', 'selectedMessage', 'selectedMessageId', 'messageCount', 'trainingPendingCount'],
                 preserveScroll: true,
                 preserveState: true,
             });
@@ -121,8 +145,8 @@ export default function TelegramInbox({
                             variant="outline"
                             type="button"
                             onClick={() => {
-                                router.reload({
-                                    only: ['messages', 'selectedMessage', 'selectedMessageId', 'messageCount'],
+                            router.reload({
+                                    only: ['messages', 'selectedMessage', 'selectedMessageId', 'messageCount', 'trainingPendingCount'],
                                     preserveScroll: true,
                                 });
                             }}
@@ -140,6 +164,9 @@ export default function TelegramInbox({
                                     <h3 className="text-lg font-semibold">Mensajes recibidos</h3>
                                     <p className="text-sm text-muted-foreground">
                                         {messageCount} mensajes guardados
+                                    </p>
+                                    <p className="text-xs text-muted-foreground">
+                                        {trainingPendingCount} candidatos de entrenamiento pendientes
                                     </p>
                                 </div>
                                 <Badge variant="secondary" className="rounded-full">
@@ -186,6 +213,11 @@ export default function TelegramInbox({
                                                                 <Badge variant="outline" className="rounded-full">
                                                                     {message.updateType || 'update'}
                                                                 </Badge>
+                                                                {message.syncMode === 'training' ? (
+                                                                    <Badge variant="default" className="rounded-full bg-emerald-600 text-primary-foreground">
+                                                                        Entrenamiento
+                                                                    </Badge>
+                                                                ) : null}
                                                                 <Badge
                                                                     variant={message.direction === 'outbound' ? 'default' : 'secondary'}
                                                                     className="rounded-full"
@@ -330,7 +362,8 @@ export default function TelegramInbox({
                                                 selectedMessage.syncTool ||
                                                 selectedMessage.syncProvider ||
                                                 selectedMessage.syncModel ||
-                                                selectedMessage.syncReason) ? (
+                                                selectedMessage.syncReason ||
+                                                selectedMessage.trainingStatus) ? (
                                                 <div className="mt-3 grid gap-2 sm:grid-cols-2">
                                                     {selectedMessage.syncMode ? (
                                                         <div className="rounded border bg-muted/10 p-2 text-sm">
@@ -385,6 +418,16 @@ export default function TelegramInbox({
                                                             </p>
                                                         </div>
                                                     ) : null}
+                                                    {selectedMessage.trainingStatus ? (
+                                                        <div className="rounded border bg-muted/10 p-2 text-sm">
+                                                            <p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
+                                                                Entrenamiento
+                                                            </p>
+                                                            <p className="mt-1 font-medium">
+                                                                {formatTrainingStatus(selectedMessage.trainingStatus)}
+                                                            </p>
+                                                        </div>
+                                                    ) : null}
                                                 </div>
                                             ) : null}
                                         </div>
@@ -397,6 +440,78 @@ export default function TelegramInbox({
                                                 {selectedMessage.messageText || 'Sin texto'}
                                             </p>
                                         </div>
+
+                                        {selectedMessage.syncMode === 'training' ? (
+                                            <div className="rounded-md border border-emerald-500/20 bg-emerald-500/5 p-3">
+                                                <div className="flex flex-wrap items-center justify-between gap-3">
+                                                    <p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
+                                                        Entrenamiento
+                                                    </p>
+                                                    <Badge
+                                                        variant={selectedMessage.trainingStatus === 'approved'
+                                                            ? 'default'
+                                                            : selectedMessage.trainingStatus === 'rejected'
+                                                                ? 'secondary'
+                                                                : 'outline'}
+                                                        className="rounded-full"
+                                                    >
+                                                        {formatTrainingStatus(selectedMessage.trainingStatus)}
+                                                    </Badge>
+                                                </div>
+
+                                                <p className="mt-2 text-sm text-muted-foreground">
+                                                    {selectedMessage.trainingLabel
+                                                        ? `${selectedMessage.trainingLabel}.`
+                                                        : 'Este mensaje fue marcado para entrenamiento.'}
+                                                </p>
+
+                                                {selectedMessage.trainingContent ? (
+                                                    <div className="mt-3 rounded border bg-background p-3 text-sm whitespace-pre-wrap">
+                                                        {selectedMessage.trainingContent}
+                                                    </div>
+                                                ) : null}
+
+                                                {selectedMessage.trainingStatus === 'pending' ? (
+                                                    <div className="mt-3 flex flex-wrap gap-2">
+                                                        <Button
+                                                            type="button"
+                                                            onClick={() => {
+                                                                router.patch(
+                                                                    approveTelegramTraining.url({
+                                                                        current_team: teamSlug,
+                                                                        telegram_inbound_message: selectedMessage.id,
+                                                                    }),
+                                                                    {},
+                                                                    {
+                                                                        preserveScroll: true,
+                                                                    },
+                                                                );
+                                                            }}
+                                                        >
+                                                            Aprobar y publicar
+                                                        </Button>
+                                                        <Button
+                                                            type="button"
+                                                            variant="outline"
+                                                            onClick={() => {
+                                                                router.patch(
+                                                                    rejectTelegramTraining.url({
+                                                                        current_team: teamSlug,
+                                                                        telegram_inbound_message: selectedMessage.id,
+                                                                    }),
+                                                                    {},
+                                                                    {
+                                                                        preserveScroll: true,
+                                                                    },
+                                                                );
+                                                            }}
+                                                        >
+                                                            Rechazar
+                                                        </Button>
+                                                    </div>
+                                                ) : null}
+                                            </div>
+                                        ) : null}
 
                                         <div className="rounded-md border bg-background p-3">
                                             <p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
@@ -443,8 +558,19 @@ export default function TelegramInbox({
                             </CardHeader>
                             <CardContent>
                                 <p className="text-sm text-muted-foreground">
-                                    Desde aqui puedes conectar el router de agentes para que este inbox dispare el padre y luego el hijo de facturacion.
+                                    Desde aqui puedes conectar el router de agentes para que este inbox dispare el padre, el hijo de facturacion y el flujo de entrenamiento.
                                 </p>
+                                <div className="mt-4 rounded-md border bg-muted/20 p-3">
+                                    <p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
+                                        Entrenamiento pendiente
+                                    </p>
+                                    <p className="mt-2 text-2xl font-semibold">
+                                        {trainingPendingCount}
+                                    </p>
+                                    <p className="mt-1 text-sm text-muted-foreground">
+                                        Marca un mensaje con <code>#regla</code>, <code>#correccion</code> o <code>#ejemplo</code> para revisarlo aqui.
+                                    </p>
+                                </div>
                             </CardContent>
                         </Card>
                     </section>

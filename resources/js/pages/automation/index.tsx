@@ -15,6 +15,9 @@ import {
 import {
     index as agentsIndex,
 } from '@/actions/App/Http/Controllers/Automation/AgentController';
+import {
+    dian as dianAutomation,
+} from '@/actions/App/Http/Controllers/Automation/AutomationController';
 import AutomationFlowHeader from '@/components/automation-flow-header';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -77,6 +80,11 @@ export default function AutomationIndex({
                                 <Link href={teamSlug ? agentsIndex.url(teamSlug) : '#'}>
                                     Gestionar agentes
                                     <ArrowRight className="ml-2 h-4 w-4" />
+                                </Link>
+                            </Button>
+                            <Button variant="outline" asChild>
+                                <Link href={teamSlug ? dianAutomation.url(teamSlug) : '#'}>
+                                    Agente DIAN
                                 </Link>
                             </Button>
                         </>

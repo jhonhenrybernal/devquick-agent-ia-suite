@@ -36,8 +36,8 @@ class AdminUserSeeder extends Seeder
 
         if ($user->personalTeam() === null) {
             $team = Team::query()->create([
-                'name' => $name . "'s Team",
-                'slug' => Str::slug($name . "'s Team"),
+                'name' => $name."'s Team",
+                'slug' => Str::slug($name."'s Team"),
                 'is_personal' => true,
             ]);
 
@@ -52,6 +52,10 @@ class AdminUserSeeder extends Seeder
 
         if ($team instanceof Team) {
             $this->callWith(AutomationAgentSeeder::class, [
+                'team' => $team,
+            ]);
+
+            $this->callWith(DianAgentSeeder::class, [
                 'team' => $team,
             ]);
         }
