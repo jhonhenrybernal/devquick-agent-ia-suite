@@ -796,7 +796,7 @@ test('telegram webhook sends a fallback reply when the ai provider is not ready'
 
         return $notification->botToken === 'telegram-bot-token'
             && $notification->chatId === '123456789'
-            && str_contains($notification->content, 'proveedor IA todavía no está activo');
+            && str_contains($notification->content, 'motor de conversacion');
     });
 
     $inboundMessage = TelegramInboundMessage::query()
@@ -809,7 +809,7 @@ test('telegram webhook sends a fallback reply when the ai provider is not ready'
     expect(data_get($inboundMessage?->payload, 'sync.status'))->toBe('sent');
     expect(data_get($inboundMessage?->payload, 'sync.mode'))->toBe('fallback');
     expect(data_get($inboundMessage?->payload, 'sync.reason'))->toBe('ai_provider_not_ready');
-    expect(data_get($inboundMessage?->payload, 'sync.response_text'))->toContain('proveedor IA todavía no está activo');
+    expect(data_get($inboundMessage?->payload, 'sync.response_text'))->toContain('motor de conversacion');
 
     $this->assertDatabaseHas('telegram_inbound_messages', [
         'team_id' => $team->id,
@@ -905,8 +905,11 @@ test('telegram webhook can query dolibarr invoices through the billing tool', fu
 
         return $notification->botToken === 'telegram-bot-token'
             && $notification->chatId === '123456789'
-            && str_contains($notification->content, 'get_invoices')
-            && str_contains($notification->content, 'FA-2026-0001');
+            && str_contains($notification->content, 'Ya revise tus facturas en la Suite de Quick CRM')
+            && str_contains($notification->content, 'FA-2026-0001')
+            && ! str_contains($notification->content, 'get_invoices')
+            && ! str_contains($notification->content, 'Dolibarr')
+            && ! str_contains($notification->content, 'Telegram');
     });
 
     $this->assertDatabaseHas('telegram_inbound_messages', [

@@ -1,5 +1,6 @@
 <?php
 
+use App\Console\Commands\ProcessScheduledAutomations;
 use App\Models\TeamInvitation;
 use Illuminate\Support\Facades\Schedule;
 
@@ -9,3 +10,8 @@ Schedule::call(function () {
         ->where('expires_at', '<', now())
         ->delete();
 })->daily()->description('Delete expired team invitations');
+
+Schedule::command(ProcessScheduledAutomations::class)
+    ->everyMinute()
+    ->withoutOverlapping()
+    ->description('Queue due scheduled automations');

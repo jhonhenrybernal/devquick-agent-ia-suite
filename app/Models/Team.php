@@ -137,6 +137,16 @@ class Team extends Model
     }
 
     /**
+     * Get the scheduled automations for this team.
+     *
+     * @return HasMany<ScheduledAutomation, $this>
+     */
+    public function scheduledAutomations(): HasMany
+    {
+        return $this->hasMany(ScheduledAutomation::class);
+    }
+
+    /**
      * Get the inbound Telegram messages for this team.
      *
      * @return HasMany<TelegramInboundMessage, $this>

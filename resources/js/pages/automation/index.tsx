@@ -87,6 +87,11 @@ export default function AutomationIndex({
                                     Agente DIAN
                                 </Link>
                             </Button>
+                            <Button variant="outline" asChild>
+                                <Link href={teamSlug ? `/${teamSlug}/automation/scheduled-automations` : '#'}>
+                                    Tareas programadas
+                                </Link>
+                            </Button>
                         </>
                     }
                     stages={[

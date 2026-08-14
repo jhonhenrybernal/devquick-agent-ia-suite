@@ -32,7 +32,7 @@ class TelegramConversationSyncService
             return $this->sendFallbackReply(
                 $team,
                 $inboundMessage,
-                'No pude leer bien tu mensaje. Escríbeme otra vez y lo reviso.',
+                'No pude leer bien tu mensaje. Escribeme otra vez y lo reviso.',
                 $this->skip('Inbound Telegram message has no chat ID or text.'),
                 [
                     'status' => 'sent',
@@ -54,7 +54,7 @@ class TelegramConversationSyncService
             return $this->sendFallbackReply(
                 $team,
                 $inboundMessage,
-                'Todavía no tengo listo el agente padre y el hijo de facturación. Revisa la configuración de agentes.',
+                'Todavia no tengo listo el flujo de facturacion. Revisa la configuracion de agentes.',
                 $this->skip('No billing agent is ready yet.'),
                 [
                     'status' => 'sent',
@@ -73,7 +73,7 @@ class TelegramConversationSyncService
                 return $this->sendFallbackReply(
                     $team,
                     $inboundMessage,
-                    'Tengo el flujo de facturación identificado, pero Dolibarr todavía no está listo para consultar información real.',
+                    'Tengo el flujo de facturacion identificado, pero todavia falta activar la conexion para revisar informacion real.',
                     $toolResult,
                     [
                         'status' => 'sent',
@@ -102,7 +102,7 @@ class TelegramConversationSyncService
             return $this->sendFallbackReply(
                 $team,
                 $inboundMessage,
-                'Tengo los agentes listos, pero el proveedor IA todavía no está activo. Actívalo para que pueda responder mejor.',
+                'Tengo los agentes listos, pero todavia no esta activo el motor de conversacion. Activarlo para que pueda responder mejor.',
                 $this->skip('AI provider is not ready.'),
                 [
                     'status' => 'sent',
@@ -139,7 +139,7 @@ class TelegramConversationSyncService
             return $this->sendFallbackReply(
                 $team,
                 $inboundMessage,
-                'Estoy conectado, pero el modelo IA no devolvió una respuesta útil todavía. Revisa la configuración del proveedor.',
+                'Estoy conectado, pero el motor de conversacion todavia no devolvio una respuesta util. Revisa la configuracion del proveedor.',
                 $this->skip($reply['description'] ?? 'AI provider did not return a response.'),
                 [
                     'status' => 'sent',
@@ -207,7 +207,7 @@ class TelegramConversationSyncService
 
         return $this->finalizeSyncResult($inboundMessage, [
             'synced' => true,
-            'description' => 'Telegram message processed by the billing agent.',
+            'description' => 'Se proceso el mensaje y se preparo una respuesta para la conversacion.',
             'response_text' => $responseText,
         ], [
             'status' => 'sent',
@@ -241,7 +241,7 @@ class TelegramConversationSyncService
         if (! $configuration instanceof DolibarrConfiguration) {
             return [
                 'synced' => false,
-                'description' => 'Dolibarr no esta configurado para consultar informacion real.',
+                'description' => 'La conexion para revisar informacion real todavia no esta configurada.',
                 'response_text' => null,
             ];
         }
@@ -301,7 +301,7 @@ class TelegramConversationSyncService
 
         return $this->finalizeSyncResult($inboundMessage, [
             'synced' => true,
-            'description' => sprintf('Telegram message processed with %s.', $intent['tool']),
+            'description' => 'Se reviso la informacion solicitada y se devolvio un resumen.',
             'response_text' => $responseText,
         ], [
             'status' => 'sent',
@@ -453,7 +453,7 @@ class TelegramConversationSyncService
 
         return $this->finalizeSyncResult($inboundMessage, [
             'synced' => true,
-            'description' => sprintf('Telegram training message captured as %s.', $trainingIntent['kind']),
+            'description' => 'Se guardo el mensaje como referencia para entrenamiento.',
             'response_text' => $responseText,
         ], [
             'status' => 'sent',
@@ -473,13 +473,14 @@ class TelegramConversationSyncService
     private function systemPrompt(AutomationAgent $parentAgent, AutomationAgent $billingAgent): string
     {
         return implode("\n\n", [
-            'Eres el agente padre central de automatizacion conectado a Telegram.',
+            'Eres el asistente principal de la Suite de Quick CRM.',
             'Responde en espanol, de forma breve, clara y util.',
-            'Tu funcion es conversar con la persona, entender la solicitud y coordinar el flujo.',
+            'Tu funcion es conversar con la persona, entender la solicitud y coordinar el flujo sin mencionar herramientas internas, tecnicismos ni nombres de sistemas.',
             'Si faltan datos para facturar, solicita solo la informacion que haga falta.',
-            'Cuando la solicitud sea de facturacion, prepara la respuesta y deja listo el contexto para el agente hijo especializado.',
-            sprintf('Agente padre: %s. %s', $parentAgent->name, $parentAgent->instructions),
+            'Cuando la solicitud sea de facturacion, prepara la respuesta y deja listo el contexto para el agente especializado.',
+            sprintf('Agente principal: %s. %s', $parentAgent->name, $parentAgent->instructions),
             sprintf('Agente de facturacion: %s. %s', $billingAgent->name, $billingAgent->instructions),
+            'Habla como una interfaz de negocio: di que revisaste, validaste, encontraste o preparaste informacion, pero no digas nombres como Telegram, Dolibarr, MCP, get_invoices, get_customers ni search_products.',
             'Tu objetivo es mantener la conversacion, preparar la factura o confirmar que el flujo de facturacion quedo listo.',
         ]);
     }
@@ -487,7 +488,7 @@ class TelegramConversationSyncService
     private function userPrompt(TelegramInboundMessage $message): string
     {
         return implode("\n", array_filter([
-            sprintf('Mensaje de Telegram: %s', $message->message_text),
+            sprintf('Mensaje recibido: %s', $message->message_text),
             $message->from_username ? sprintf('Usuario: @%s', $message->from_username) : null,
             $message->from_user_id ? sprintf('User ID: %s', $message->from_user_id) : null,
             $message->chat_id ? sprintf('Chat ID: %s', $message->chat_id) : null,
@@ -673,7 +674,7 @@ class TelegramConversationSyncService
     {
         if (($result['count'] ?? 0) === 0) {
             return sprintf(
-                'No encontre facturas recientes en Dolibarr. El agente padre %s y el agente de facturacion %s ya consultaron la tool get_invoices, pero no hay registros para mostrar.',
+                'No encontre facturas recientes en la Suite de Quick CRM. Ya revise el historial de facturacion, pero no hay registros para mostrar.',
                 $parentAgent->name,
                 $billingAgent->name,
             );
@@ -692,7 +693,7 @@ class TelegramConversationSyncService
         }
 
         return sprintf(
-            'Ya consulte Dolibarr con get_invoices y encontre %d facturas recientes:%s%s',
+            'Ya revise tus facturas en la Suite de Quick CRM y encontre %d registros recientes:%s%s',
             (int) ($result['count'] ?? 0),
             PHP_EOL,
             implode(PHP_EOL, $lines),
@@ -706,7 +707,7 @@ class TelegramConversationSyncService
     {
         if (($result['count'] ?? 0) === 0) {
             return sprintf(
-                'No encontre clientes en Dolibarr para mostrar. El agente padre %s y el agente de facturacion %s ya consultaron get_customers.',
+                'No encontre clientes para mostrar en la Suite de Quick CRM. Ya revise el directorio de clientes, pero no hay registros para mostrar.',
                 $parentAgent->name,
                 $billingAgent->name,
             );
@@ -724,7 +725,7 @@ class TelegramConversationSyncService
         }
 
         return sprintf(
-            'Ya consulte Dolibarr con get_customers y encontre %d clientes:%s%s',
+            'Ya revise tus clientes en la Suite de Quick CRM y encontre %d registros:%s%s',
             (int) ($result['count'] ?? 0),
             PHP_EOL,
             implode(PHP_EOL, $lines),
@@ -738,7 +739,7 @@ class TelegramConversationSyncService
     {
         if (($result['count'] ?? 0) === 0) {
             return sprintf(
-                'No encontre productos o servicios en Dolibarr. El agente padre %s y el agente de facturacion %s ya consultaron search_products.',
+                'No encontre productos o servicios para mostrar en la Suite de Quick CRM. Ya revise el catalogo, pero no hay registros para mostrar.',
                 $parentAgent->name,
                 $billingAgent->name,
             );
@@ -756,7 +757,7 @@ class TelegramConversationSyncService
         }
 
         return sprintf(
-            'Ya consulte Dolibarr con search_products y encontre %d productos o servicios:%s%s',
+            'Ya revise los productos y servicios en la Suite de Quick CRM y encontre %d registros:%s%s',
             (int) ($result['count'] ?? 0),
             PHP_EOL,
             implode(PHP_EOL, $lines),

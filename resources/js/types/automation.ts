@@ -120,3 +120,44 @@ export type AutomationAgent = {
     isEnabled: boolean;
     createdAt?: string | null;
 };
+
+export type ScheduledAutomationRun = {
+    id: number;
+    status: 'queued' | 'running' | 'success' | 'failed' | 'skipped';
+    startedAt?: string | null;
+    finishedAt?: string | null;
+    inputPayload?: Record<string, unknown> | null;
+    outputPayload?: Record<string, unknown> | null;
+    errorMessage?: string | null;
+};
+
+export type ScheduledAutomationApproval = {
+    id: number;
+    status: 'pending' | 'approved' | 'rejected';
+    approvedAt?: string | null;
+    notes?: string | null;
+};
+
+export type ScheduledAutomation = {
+    id: number;
+    name: string;
+    description?: string | null;
+    status: 'draft' | 'active' | 'paused' | 'completed' | 'failed';
+    triggerType: 'manual' | 'interval' | 'cron';
+    cronExpression?: string | null;
+    intervalValue?: number | null;
+    intervalUnit?: 'minutes' | 'hours' | 'days' | 'weeks' | 'months' | null;
+    timezone: string;
+    nextRunAt?: string | null;
+    lastRunAt?: string | null;
+    lastResult?: string | null;
+    parentAgentId?: number | null;
+    parentAgentName?: string | null;
+    childAgentId?: number | null;
+    childAgentName?: string | null;
+    sourceMessageId?: number | null;
+    payload: Record<string, unknown>;
+    runsCount?: number;
+    latestRun?: string | null;
+    latestApproval?: string | null;
+};
