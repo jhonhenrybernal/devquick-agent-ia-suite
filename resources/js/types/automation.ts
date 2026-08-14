@@ -14,6 +14,30 @@ export type TelegramConfiguration = {
     isEnabled: boolean;
     hasToken: boolean;
     hasWebhookSecret?: boolean;
+    accessSessions?: TelegramAccessSession[];
+    accessSummary?: TelegramAccessSummary;
+};
+
+export type TelegramAccessSession = {
+    id: number;
+    telegramUserId: string;
+    chatId?: string | null;
+    telegramUsername?: string | null;
+    displayName?: string | null;
+    status: 'pending' | 'approved' | 'revoked';
+    requestedAt?: string | null;
+    approvedAt?: string | null;
+    revokedAt?: string | null;
+    approvedByUserName?: string | null;
+    lastMessageAt?: string | null;
+    notes?: string | null;
+};
+
+export type TelegramAccessSummary = {
+    total: number;
+    pending: number;
+    approved: number;
+    revoked: number;
 };
 
 export type TelegramInboundMessage = {

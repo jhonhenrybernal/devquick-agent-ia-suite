@@ -3,6 +3,7 @@
 use App\Enums\TeamRole;
 use App\Models\AutomationAgent;
 use App\Models\Team;
+use App\Models\TelegramAccessSession;
 use App\Models\User;
 use Database\Seeders\AdminUserSeeder;
 use Illuminate\Support\Facades\Http;
@@ -35,6 +36,16 @@ test('telegram configuration page can be rendered by team owners', function () {
         'webhook_secret' => 'telegram-webhook-secret',
         'is_enabled' => true,
     ]);
+    $team->telegramAccessSessions()->create([
+        'telegram_user_id' => '555',
+        'chat_id' => '123456789',
+        'telegram_username' => 'jhonh',
+        'display_name' => 'John Doe',
+        'status' => TelegramAccessSession::STATUS_APPROVED,
+        'approved_at' => now(),
+        'approved_by_user_id' => $user->id,
+        'last_message_at' => now(),
+    ]);
 
     Http::fake([
         'https://api.telegram.org/*' => Http::response([
@@ -66,7 +77,60 @@ test('telegram configuration page can be rendered by team owners', function () {
             ->where('telegramConfiguration.webhookSecret', 'telegram-webhook-secret')
             ->where('telegramConfiguration.webhookStatusOk', true)
             ->where('telegramConfiguration.webhookMatchesExpectedUrl', true)
+            ->where('telegramConfiguration.accessSummary.total', 1)
+            ->where('telegramConfiguration.accessSummary.approved', 1)
+            ->where('telegramConfiguration.accessSessions.0.telegramUserId', '555')
         );
+});
+
+test('telegram access sessions can be approved and revoked from the configuration page', function () {
+    $user = User::factory()->create();
+    $team = Team::factory()->create();
+
+    $team->members()->attach($user, ['role' => TeamRole::Owner->value]);
+
+    $accessSession = $team->telegramAccessSessions()->create([
+        'telegram_user_id' => '555',
+        'chat_id' => '123456789',
+        'telegram_username' => 'jhonh',
+        'display_name' => 'John Doe',
+        'status' => TelegramAccessSession::STATUS_PENDING,
+        'requested_at' => now(),
+        'last_message_at' => now(),
+    ]);
+
+    $approveResponse = $this
+        ->actingAs($user)
+        ->patch(route('automation.telegram.access.approve', [
+            'current_team' => $team,
+            'telegram_access_session' => $accessSession,
+        ]));
+
+    $approveResponse
+        ->assertRedirect(route('automation.telegram.edit', $team))
+        ->assertSessionHasNoErrors();
+
+    $accessSession->refresh();
+
+    expect($accessSession->status)->toBe(TelegramAccessSession::STATUS_APPROVED);
+    expect($accessSession->approved_by_user_id)->toBe($user->id);
+    expect($accessSession->approved_at)->not->toBeNull();
+
+    $revokeResponse = $this
+        ->actingAs($user)
+        ->patch(route('automation.telegram.access.revoke', [
+            'current_team' => $team,
+            'telegram_access_session' => $accessSession,
+        ]));
+
+    $revokeResponse
+        ->assertRedirect(route('automation.telegram.edit', $team))
+        ->assertSessionHasNoErrors();
+
+    $accessSession->refresh();
+
+    expect($accessSession->status)->toBe(TelegramAccessSession::STATUS_REVOKED);
+    expect($accessSession->revoked_at)->not->toBeNull();
 });
 
 test('telegram inbox can be rendered by team owners', function () {

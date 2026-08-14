@@ -1,11 +1,13 @@
-import { Form, Head, Link } from '@inertiajs/react';
-import { ArrowRight, ExternalLink } from 'lucide-react';
+import { Form, Head, Link, router } from '@inertiajs/react';
+import { ArrowRight, ExternalLink, ShieldCheck, ShieldOff, Users } from 'lucide-react';
 import {
     index as automationIndex,
 } from '@/actions/App/Http/Controllers/Automation/AutomationController';
 import {
     edit as telegramEdit,
     inbox as telegramInbox,
+    approveAccess as approveTelegramAccess,
+    revokeAccess as revokeTelegramAccess,
     validateToken,
     detectChatId,
     syncWebhook,
@@ -21,7 +23,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import type { TelegramConfiguration, Team } from '@/types';
+import type { TelegramAccessSession, TelegramConfiguration, Team } from '@/types';
 
 type Props = {
     telegramConfiguration: TelegramConfiguration;
@@ -33,6 +35,31 @@ export default function Telegram({
     currentTeam,
 }: Props) {
     const teamSlug = currentTeam?.slug;
+    const accessSessions = telegramConfiguration.accessSessions ?? [];
+    const accessSummary = telegramConfiguration.accessSummary ?? {
+        total: 0,
+        pending: 0,
+        approved: 0,
+        revoked: 0,
+    };
+
+    function accessStatusLabel(status: string): string {
+        const labels: Record<string, string> = {
+            pending: 'Pendiente',
+            approved: 'Aprobado',
+            revoked: 'Revocado',
+        };
+
+        return labels[status] ?? status;
+    }
+
+    function accessAccountLabel(session: TelegramAccessSession): string {
+        const baseLabel = session.displayName || session.telegramUsername || session.telegramUserId;
+
+        return session.telegramUsername
+            ? `${baseLabel} (@${session.telegramUsername})`
+            : baseLabel;
+    }
 
     return (
         <>
@@ -397,6 +424,165 @@ export default function Telegram({
                                 </>
                             )}
                         </Form>
+                    </CardContent>
+                </Card>
+
+                <Card className="overflow-hidden border-border/70 bg-card/90 shadow-sm">
+                    <div className="h-1 bg-gradient-to-r from-emerald-500 via-cyan-400 to-sky-500" />
+                    <CardHeader className="space-y-2">
+                        <div className="flex items-center justify-between gap-3">
+                            <div>
+                                <CardTitle className="text-xl">Telegram access</CardTitle>
+                                <p className="text-sm text-muted-foreground">
+                                    Aprueba o revoca las cuentas de Telegram que pueden conversar con el agente. No se bloquean por inactividad.
+                                </p>
+                            </div>
+                            <Badge variant="secondary" className="rounded-full px-3 py-1">
+                                <Users className="mr-1 h-3 w-3" />
+                                {accessSummary.total} sesiones
+                            </Badge>
+                        </div>
+                    </CardHeader>
+                    <CardContent className="space-y-4">
+                        <div className="grid gap-3 sm:grid-cols-3">
+                            <div className="rounded-2xl border bg-muted/20 p-4">
+                                <p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
+                                    Pendientes
+                                </p>
+                                <p className="mt-2 text-2xl font-semibold">
+                                    {accessSummary.pending}
+                                </p>
+                            </div>
+                            <div className="rounded-2xl border bg-muted/20 p-4">
+                                <p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
+                                    Aprobadas
+                                </p>
+                                <p className="mt-2 text-2xl font-semibold">
+                                    {accessSummary.approved}
+                                </p>
+                            </div>
+                            <div className="rounded-2xl border bg-muted/20 p-4">
+                                <p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
+                                    Revocadas
+                                </p>
+                                <p className="mt-2 text-2xl font-semibold">
+                                    {accessSummary.revoked}
+                                </p>
+                            </div>
+                        </div>
+
+                        <div className="overflow-x-auto rounded-2xl border">
+                            <table className="min-w-full divide-y divide-border text-left text-sm">
+                                <thead className="bg-muted/30">
+                                    <tr>
+                                        <th className="px-4 py-3 font-medium">Cuenta</th>
+                                        <th className="px-4 py-3 font-medium">Estado</th>
+                                        <th className="px-4 py-3 font-medium">Ultimo mensaje</th>
+                                        <th className="px-4 py-3 font-medium">Acciones</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y divide-border">
+                                    {accessSessions.length > 0 ? (
+                                        accessSessions.map((session) => (
+                                            <tr key={session.id}>
+                                                <td className="px-4 py-4">
+                                                    <div className="space-y-1">
+                                                        <p className="font-medium">
+                                                            {accessAccountLabel(session)}
+                                                        </p>
+                                                        <p className="text-xs text-muted-foreground">
+                                                            User ID {session.telegramUserId}
+                                                            {session.chatId ? ` · chat ${session.chatId}` : ''}
+                                                        </p>
+                                                        {session.approvedByUserName ? (
+                                                            <p className="text-xs text-muted-foreground">
+                                                                Aprobado por {session.approvedByUserName}
+                                                            </p>
+                                                        ) : null}
+                                                    </div>
+                                                </td>
+                                                <td className="px-4 py-4">
+                                                    <Badge
+                                                        variant={session.status === 'approved' ? 'default' : session.status === 'pending' ? 'secondary' : 'outline'}
+                                                        className="rounded-full"
+                                                    >
+                                                        {accessStatusLabel(session.status)}
+                                                    </Badge>
+                                                    <p className="mt-2 text-xs text-muted-foreground">
+                                                        {session.requestedAt
+                                                            ? new Intl.DateTimeFormat('es-CO', {
+                                                                dateStyle: 'medium',
+                                                                timeStyle: 'short',
+                                                            }).format(new Date(session.requestedAt))
+                                                            : 'Sin fecha'}
+                                                    </p>
+                                                </td>
+                                                <td className="px-4 py-4 text-muted-foreground">
+                                                    {session.lastMessageAt
+                                                        ? new Intl.DateTimeFormat('es-CO', {
+                                                            dateStyle: 'medium',
+                                                            timeStyle: 'short',
+                                                        }).format(new Date(session.lastMessageAt))
+                                                        : 'Sin actividad'}
+                                                </td>
+                                                <td className="px-4 py-4">
+                                                    <div className="flex flex-wrap gap-2">
+                                                        {session.status !== 'approved' ? (
+                                                            <Button
+                                                                type="button"
+                                                                size="sm"
+                                                                onClick={() => {
+                                                                    router.patch(
+                                                                        approveTelegramAccess.url({
+                                                                            current_team: teamSlug ?? '',
+                                                                            telegram_access_session: session.id,
+                                                                        }),
+                                                                        {},
+                                                                        { preserveScroll: true },
+                                                                    );
+                                                                }}
+                                                            >
+                                                                <ShieldCheck className="mr-2 h-4 w-4" />
+                                                                Aprobar
+                                                            </Button>
+                                                        ) : null}
+                                                        {session.status !== 'revoked' ? (
+                                                            <Button
+                                                                type="button"
+                                                                variant="outline"
+                                                                size="sm"
+                                                                onClick={() => {
+                                                                    router.patch(
+                                                                        revokeTelegramAccess.url({
+                                                                            current_team: teamSlug ?? '',
+                                                                            telegram_access_session: session.id,
+                                                                        }),
+                                                                        {},
+                                                                        { preserveScroll: true },
+                                                                    );
+                                                                }}
+                                                            >
+                                                                <ShieldOff className="mr-2 h-4 w-4" />
+                                                                Revocar
+                                                            </Button>
+                                                        ) : null}
+                                                    </div>
+                                                </td>
+                                            </tr>
+                                        ))
+                                    ) : (
+                                        <tr>
+                                            <td
+                                                colSpan={4}
+                                                className="px-4 py-10 text-center text-sm text-muted-foreground"
+                                            >
+                                                Todavia no hay sesiones de Telegram registradas. Cuando alguien escriba al bot, aparecera aqui para aprobarla.
+                                            </td>
+                                        </tr>
+                                    )}
+                                </tbody>
+                            </table>
+                        </div>
                     </CardContent>
                 </Card>
 

@@ -69,6 +69,10 @@ function formatSyncReason(reason?: string | null): string {
         training_correction: 'Entrenamiento: correccion',
         training_example: 'Entrenamiento: ejemplo',
         training_learning: 'Entrenamiento: aprendizaje',
+        telegram_access_pending: 'Acceso pendiente',
+        telegram_access_revoked: 'Acceso revocado',
+        telegram_access_approved: 'Acceso aprobado',
+        missing_telegram_user: 'Cuenta de Telegram no identificada',
     };
 
     return friendlyReasons[reason] ?? normalizedReason;

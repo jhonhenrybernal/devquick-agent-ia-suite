@@ -6,9 +6,11 @@ use App\Enums\TeamRole;
 use App\Jobs\ProcessTelegramInboundMessage;
 use App\Models\AutomationAgent;
 use App\Models\Team;
+use App\Models\TelegramAccessSession;
 use App\Models\TelegramInboundMessage;
 use App\Models\User;
 use App\Notifications\Automation\TelegramMessageNotification;
+use Illuminate\Http\Client\Request;
 use Illuminate\Notifications\AnonymousNotifiable;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Http;
@@ -239,6 +241,16 @@ test('telegram webhook can sync an llm reply back to telegram', function () {
         'is_enabled' => true,
     ]);
 
+    $team->telegramAccessSessions()->create([
+        'telegram_user_id' => '555',
+        'chat_id' => '123456789',
+        'telegram_username' => 'jhonh',
+        'display_name' => 'Jhonh',
+        'status' => TelegramAccessSession::STATUS_APPROVED,
+        'approved_at' => now(),
+        'last_message_at' => now(),
+    ]);
+
     $team->aiProviderConfiguration()->create([
         'provider' => AiProvider::OpenAi->value,
         'model' => 'gpt-4.1-mini',
@@ -314,6 +326,102 @@ test('telegram webhook can sync an llm reply back to telegram', function () {
     ]);
 });
 
+test('telegram webhook introduces itself to a brand new user with a short greeting', function () {
+    Notification::fake();
+
+    $owner = User::factory()->create();
+    $team = Team::factory()->create();
+    $team->members()->attach($owner, ['role' => TeamRole::Owner->value]);
+
+    $team->telegramConfiguration()->create([
+        'bot_token' => 'telegram-bot-token',
+        'chat_id' => '123456789',
+        'webhook_secret' => 'telegram-webhook-secret',
+        'is_enabled' => true,
+    ]);
+
+    $team->telegramAccessSessions()->create([
+        'telegram_user_id' => '555',
+        'chat_id' => '123456789',
+        'telegram_username' => 'jhonh',
+        'display_name' => 'Jhonh',
+        'status' => TelegramAccessSession::STATUS_APPROVED,
+        'approved_at' => now(),
+        'last_message_at' => now(),
+    ]);
+
+    $parentAgent = AutomationAgent::factory()
+        ->for($team)
+        ->create([
+            'name' => 'Automation orchestrator',
+            'target_tool' => 'route_task',
+            'is_enabled' => true,
+        ]);
+
+    AutomationAgent::factory()
+        ->for($team)
+        ->childOf($parentAgent)
+        ->create([
+            'name' => 'Monthly billing agent',
+            'target_tool' => 'create_invoice',
+            'instructions' => 'Create the monthly invoice and validate the customer.',
+            'is_enabled' => true,
+        ]);
+
+    $response = $this
+        ->postJson(route('automation.telegram.webhook', $team), [
+            'update_id' => 912345713,
+            'message' => [
+                'message_id' => 92,
+                'chat' => [
+                    'id' => 123456789,
+                    'type' => 'private',
+                ],
+                'from' => [
+                    'id' => 555,
+                    'username' => 'jhonh',
+                ],
+                'text' => 'Hola',
+            ],
+        ], [
+            'X-Telegram-Bot-Api-Secret-Token' => 'telegram-webhook-secret',
+        ]);
+
+    $response->assertNoContent();
+
+    Notification::assertSentOnDemand(TelegramMessageNotification::class, function (
+        TelegramMessageNotification $notification,
+        array $channels,
+        AnonymousNotifiable $notifiable,
+    ): bool {
+        expect($channels)->toContain('telegram');
+        expect($notifiable->routeNotificationFor('telegram'))->toBe('123456789');
+
+        return $notification->botToken === 'telegram-bot-token'
+            && $notification->chatId === '123456789'
+            && str_contains($notification->content, 'Hola. Soy el asistente de Suite de Quick CRM.')
+            && str_contains($notification->content, 'facturacion')
+            && str_contains($notification->content, 'clientes')
+            && str_contains($notification->content, 'productos o servicios')
+            && ! str_contains($notification->content, 'Telegram')
+            && ! str_contains($notification->content, 'Dolibarr');
+    });
+
+    $this->assertDatabaseHas('telegram_inbound_messages', [
+        'team_id' => $team->id,
+        'direction' => 'inbound',
+        'update_id' => 912345713,
+        'message_text' => 'Hola',
+    ]);
+
+    $this->assertDatabaseHas('telegram_inbound_messages', [
+        'team_id' => $team->id,
+        'direction' => 'outbound',
+        'chat_id' => '123456789',
+        'from_username' => 'Automation orchestrator',
+    ]);
+});
+
 test('telegram webhook ignores duplicate updates to avoid repeated replies', function () {
     Bus::fake();
 
@@ -326,6 +434,16 @@ test('telegram webhook ignores duplicate updates to avoid repeated replies', fun
         'chat_id' => '123456789',
         'webhook_secret' => 'telegram-webhook-secret',
         'is_enabled' => true,
+    ]);
+
+    $team->telegramAccessSessions()->create([
+        'telegram_user_id' => '555',
+        'chat_id' => '123456789',
+        'telegram_username' => 'jhonh',
+        'display_name' => 'Jhonh',
+        'status' => TelegramAccessSession::STATUS_APPROVED,
+        'approved_at' => now(),
+        'last_message_at' => now(),
     ]);
 
     $team->aiProviderConfiguration()->create([
@@ -391,6 +509,87 @@ test('telegram webhook ignores duplicate updates to avoid repeated replies', fun
     ]);
 });
 
+test('telegram webhook creates a pending access session for new telegram users before replying', function () {
+    Notification::fake();
+
+    $owner = User::factory()->create();
+    $team = Team::factory()->create();
+    $team->members()->attach($owner, ['role' => TeamRole::Owner->value]);
+
+    $team->telegramConfiguration()->create([
+        'bot_token' => 'telegram-bot-token',
+        'chat_id' => '123456789',
+        'webhook_secret' => 'telegram-webhook-secret',
+        'is_enabled' => true,
+    ]);
+
+    $team->telegramAccessSessions()->create([
+        'telegram_user_id' => '555',
+        'chat_id' => '123456789',
+        'telegram_username' => 'jhonh',
+        'display_name' => 'Jhonh',
+        'status' => TelegramAccessSession::STATUS_APPROVED,
+        'approved_at' => now(),
+        'last_message_at' => now(),
+    ]);
+
+    $response = $this
+        ->postJson(route('automation.telegram.webhook', $team), [
+            'update_id' => 912345708,
+            'message' => [
+                'message_id' => 84,
+                'chat' => [
+                    'id' => 123456789,
+                    'type' => 'private',
+                ],
+                'from' => [
+                    'id' => 999,
+                    'username' => 'newuser',
+                    'first_name' => 'Nuevo',
+                    'last_name' => 'Usuario',
+                ],
+                'text' => 'Hola, quiero hablar con el agente.',
+            ],
+        ], [
+            'X-Telegram-Bot-Api-Secret-Token' => 'telegram-webhook-secret',
+        ]);
+
+    $response->assertNoContent();
+
+    Notification::assertSentOnDemand(TelegramMessageNotification::class, function (
+        TelegramMessageNotification $notification,
+        array $channels,
+        AnonymousNotifiable $notifiable,
+    ): bool {
+        expect($channels)->toContain('telegram');
+        expect($notifiable->routeNotificationFor('telegram'))->toBe('123456789');
+
+        return $notification->botToken === 'telegram-bot-token'
+            && $notification->chatId === '123456789'
+            && str_contains($notification->content, 'pendiente de aprobacion');
+    });
+
+    $accessSession = TelegramAccessSession::query()
+        ->where('team_id', $team->id)
+        ->where('telegram_user_id', '999')
+        ->first();
+
+    expect($accessSession)->not->toBeNull();
+    expect($accessSession?->status)->toBe(TelegramAccessSession::STATUS_PENDING);
+    expect($accessSession?->telegram_username)->toBe('newuser');
+    expect($accessSession?->display_name)->toBe('Nuevo Usuario');
+
+    $inboundMessage = TelegramInboundMessage::query()
+        ->where('team_id', $team->id)
+        ->where('direction', 'inbound')
+        ->where('update_id', 912345708)
+        ->first();
+
+    expect($inboundMessage)->not->toBeNull();
+    expect(data_get($inboundMessage?->payload, 'sync.mode'))->toBe('authorization');
+    expect(data_get($inboundMessage?->payload, 'sync.reason'))->toBe('telegram_access_pending');
+});
+
 test('telegram webhook marks hashtagged messages as training candidates', function () {
     Notification::fake();
 
@@ -403,6 +602,16 @@ test('telegram webhook marks hashtagged messages as training candidates', functi
         'chat_id' => '123456789',
         'webhook_secret' => 'telegram-webhook-secret',
         'is_enabled' => true,
+    ]);
+
+    $team->telegramAccessSessions()->create([
+        'telegram_user_id' => '555',
+        'chat_id' => '123456789',
+        'telegram_username' => 'jhonh',
+        'display_name' => 'Jhonh',
+        'status' => TelegramAccessSession::STATUS_APPROVED,
+        'approved_at' => now(),
+        'last_message_at' => now(),
     ]);
 
     $response = $this
@@ -549,6 +758,16 @@ test('telegram webhook can stream an ollama reply back to telegram', function ()
         'is_enabled' => true,
     ]);
 
+    $team->telegramAccessSessions()->create([
+        'telegram_user_id' => '555',
+        'chat_id' => '123456789',
+        'telegram_username' => 'jhonh',
+        'display_name' => 'Jhonh',
+        'status' => TelegramAccessSession::STATUS_APPROVED,
+        'approved_at' => now(),
+        'last_message_at' => now(),
+    ]);
+
     $team->aiProviderConfiguration()->create([
         'provider' => AiProvider::Ollama->value,
         'model' => 'llama3.1',
@@ -660,6 +879,16 @@ test('telegram webhook keeps the sync status when telegram delivery fails', func
         'is_enabled' => true,
     ]);
 
+    $team->telegramAccessSessions()->create([
+        'telegram_user_id' => '555',
+        'chat_id' => '123456789',
+        'telegram_username' => 'jhonh',
+        'display_name' => 'Jhonh',
+        'status' => TelegramAccessSession::STATUS_APPROVED,
+        'approved_at' => now(),
+        'last_message_at' => now(),
+    ]);
+
     $team->aiProviderConfiguration()->create([
         'provider' => AiProvider::OpenAi->value,
         'model' => 'gpt-4.1-mini',
@@ -745,6 +974,16 @@ test('telegram webhook sends a fallback reply when the ai provider is not ready'
         'chat_id' => '123456789',
         'webhook_secret' => 'telegram-webhook-secret',
         'is_enabled' => true,
+    ]);
+
+    $team->telegramAccessSessions()->create([
+        'telegram_user_id' => '555',
+        'chat_id' => '123456789',
+        'telegram_username' => 'jhonh',
+        'display_name' => 'Jhonh',
+        'status' => TelegramAccessSession::STATUS_APPROVED,
+        'approved_at' => now(),
+        'last_message_at' => now(),
     ]);
 
     $parentAgent = AutomationAgent::factory()
@@ -850,6 +1089,16 @@ test('telegram webhook can query dolibarr invoices through the billing tool', fu
         'is_enabled' => true,
     ]);
 
+    $team->telegramAccessSessions()->create([
+        'telegram_user_id' => '555',
+        'chat_id' => '123456789',
+        'telegram_username' => 'jhonh',
+        'display_name' => 'Jhonh',
+        'status' => TelegramAccessSession::STATUS_APPROVED,
+        'approved_at' => now(),
+        'last_message_at' => now(),
+    ]);
+
     $team->dolibarrConfiguration()->create([
         'api_login' => 'dolibarr-user',
         'api_password' => 'dolibarr-password',
@@ -925,4 +1174,360 @@ test('telegram webhook can query dolibarr invoices through the billing tool', fu
         'chat_id' => '123456789',
         'from_username' => 'Automation orchestrator',
     ]);
+});
+
+test('telegram webhook can show invoice details from the last conversation context', function () {
+    Notification::fake();
+
+    Http::fake(function (Request $request) {
+        if (str_contains($request->url(), '/api/index.php/login')) {
+            return Http::response([
+                'success' => [
+                    'token' => 'dolibarr-token',
+                ],
+            ], 200);
+        }
+
+        if (preg_match('/\/api\/index\.php\/invoices\/\d+$/', $request->url()) === 1) {
+            return Http::response([
+                'id' => 50,
+                'ref' => 'IN2408-0002',
+                'socname' => 'Acme Services',
+                'date' => '2026-08-11',
+                'total_ttc' => 180000,
+                'status' => 1,
+                'status_label' => 'Open',
+                'lines' => [
+                    [
+                        'desc' => 'Servicio mensual',
+                        'qty' => 1,
+                        'subprice' => 180000,
+                        'total_ttc' => 180000,
+                    ],
+                ],
+            ], 200);
+        }
+
+        return Http::response([
+            [
+                'id' => 50,
+                'ref' => 'IN2408-0002',
+                'ref_client' => 'CLIENTE-2026-08',
+                'socname' => 'Acme Services',
+                'date' => '2026-08-11',
+                'total_ttc' => 180000,
+                'status' => 1,
+                'label_status' => 'Open',
+            ],
+        ], 200);
+    });
+
+    $owner = User::factory()->create();
+    $team = Team::factory()->create();
+    $team->members()->attach($owner, ['role' => TeamRole::Owner->value]);
+
+    $team->telegramConfiguration()->create([
+        'bot_token' => 'telegram-bot-token',
+        'chat_id' => '123456789',
+        'webhook_secret' => 'telegram-webhook-secret',
+        'is_enabled' => true,
+    ]);
+
+    $team->telegramAccessSessions()->create([
+        'telegram_user_id' => '555',
+        'chat_id' => '123456789',
+        'telegram_username' => 'jhonh',
+        'display_name' => 'Jhonh',
+        'status' => TelegramAccessSession::STATUS_APPROVED,
+        'approved_at' => now(),
+        'last_message_at' => now(),
+    ]);
+
+    $team->dolibarrConfiguration()->create([
+        'api_login' => 'dolibarr-user',
+        'api_password' => 'dolibarr-password',
+        'api_url' => 'https://dolibarr.example.com/api/index.php/explorer/',
+    ]);
+
+    $team->aiProviderConfiguration()->create([
+        'provider' => AiProvider::OpenAi->value,
+        'model' => 'gpt-4.1-mini',
+        'api_key' => 'openai-api-key',
+        'is_enabled' => true,
+    ]);
+
+    $parentAgent = AutomationAgent::factory()
+        ->for($team)
+        ->create([
+            'name' => 'Automation orchestrator',
+            'target_tool' => 'route_task',
+            'is_enabled' => true,
+        ]);
+
+    AutomationAgent::factory()
+        ->for($team)
+        ->childOf($parentAgent)
+        ->create([
+            'name' => 'Monthly billing agent',
+            'target_tool' => 'create_invoice',
+            'instructions' => 'Create the monthly invoice and validate the customer.',
+            'is_enabled' => true,
+        ]);
+
+    $team->telegramInboundMessages()->create([
+        'direction' => 'inbound',
+        'update_id' => 912345699,
+        'update_type' => 'message',
+        'chat_id' => '123456789',
+        'from_user_id' => '555',
+        'from_username' => 'jhonh',
+        'message_text' => 'Quiero ver las facturas generadas desde enero.',
+        'payload' => [
+            'update_id' => 912345699,
+            'message' => [
+                'text' => 'Quiero ver las facturas generadas desde enero.',
+            ],
+            'sync' => [
+                'mode' => 'tool',
+                'tool' => 'get_invoices',
+                'context' => [
+                    'topic' => 'invoices',
+                    'last_invoice_reference' => 'IN2408-0002',
+                ],
+            ],
+        ],
+    ]);
+
+    $team->telegramInboundMessages()->create([
+        'direction' => 'outbound',
+        'update_type' => 'assistant_message',
+        'chat_id' => '123456789',
+        'from_username' => 'Automation orchestrator',
+        'message_text' => 'Ya revise tus facturas en la Suite de Quick CRM y encontre 1 registros recientes.',
+        'payload' => [
+            'sent_via' => 'telegram_notification',
+            'history_context' => [
+                'conversation' => [
+                    'last_topic' => 'invoices',
+                    'last_invoice_reference' => 'IN2408-0002',
+                    'recent_messages' => [
+                        [
+                            'role' => 'user',
+                            'text' => 'Quiero ver las facturas generadas desde enero.',
+                        ],
+                        [
+                            'role' => 'assistant',
+                            'text' => 'Ya revise tus facturas en la Suite de Quick CRM y encontre 1 registros recientes.',
+                        ],
+                    ],
+                ],
+            ],
+        ],
+    ]);
+
+    $response = $this
+        ->postJson(route('automation.telegram.webhook', $team), [
+            'update_id' => 912345710,
+            'message' => [
+                'message_id' => 90,
+                'chat' => [
+                    'id' => 123456789,
+                    'type' => 'private',
+                ],
+                'from' => [
+                    'id' => 555,
+                    'username' => 'jhonh',
+                ],
+                'text' => 'si',
+            ],
+        ], [
+            'X-Telegram-Bot-Api-Secret-Token' => 'telegram-webhook-secret',
+        ]);
+
+    $response->assertNoContent();
+
+    Notification::assertSentOnDemand(TelegramMessageNotification::class, function (
+        TelegramMessageNotification $notification,
+        array $channels,
+        AnonymousNotifiable $notifiable,
+    ): bool {
+        expect($channels)->toContain('telegram');
+        expect($notifiable->routeNotificationFor('telegram'))->toBe('123456789');
+
+        return $notification->botToken === 'telegram-bot-token'
+            && $notification->chatId === '123456789'
+            && str_contains($notification->content, 'Te comparto el detalle de la factura IN2408-0002')
+            && str_contains($notification->content, 'Acme Services')
+            && str_contains($notification->content, 'Servicio mensual')
+            && ! str_contains($notification->content, 'get_invoice_detail')
+            && ! str_contains($notification->content, 'Dolibarr')
+            && ! str_contains($notification->content, 'Telegram');
+    });
+
+    $this->assertDatabaseHas('telegram_inbound_messages', [
+        'team_id' => $team->id,
+        'direction' => 'inbound',
+        'update_id' => 912345710,
+        'message_text' => 'si',
+    ]);
+
+    $this->assertDatabaseHas('telegram_inbound_messages', [
+        'team_id' => $team->id,
+        'direction' => 'outbound',
+        'chat_id' => '123456789',
+        'from_username' => 'Automation orchestrator',
+    ]);
+});
+
+test('telegram webhook keeps the recent conversation context in the ai prompt', function () {
+    Notification::fake();
+
+    Http::fake(function (Request $request) {
+        if (str_contains($request->url(), '/chat/completions')) {
+            expect($request->body())->toContain('Contexto reciente:');
+            expect($request->body())->toContain('Quiero ver las facturas generadas desde enero.');
+            expect($request->body())->toContain('Ya revise tus facturas en la Suite de Quick CRM');
+            expect($request->body())->toContain('puedes aclararme lo anterior');
+
+            return Http::response([
+                'id' => 'chatcmpl-test',
+                'object' => 'chat.completion',
+                'choices' => [
+                    [
+                        'index' => 0,
+                        'message' => [
+                            'role' => 'assistant',
+                            'content' => 'Claro, sigo el hilo y te ayudo con eso.',
+                        ],
+                        'finish_reason' => 'stop',
+                    ],
+                ],
+            ], 200);
+        }
+
+        return Http::response([], 500);
+    });
+
+    $owner = User::factory()->create();
+    $team = Team::factory()->create();
+    $team->members()->attach($owner, ['role' => TeamRole::Owner->value]);
+
+    $team->telegramConfiguration()->create([
+        'bot_token' => 'telegram-bot-token',
+        'chat_id' => '123456789',
+        'webhook_secret' => 'telegram-webhook-secret',
+        'is_enabled' => true,
+    ]);
+
+    $team->telegramAccessSessions()->create([
+        'telegram_user_id' => '555',
+        'chat_id' => '123456789',
+        'telegram_username' => 'jhonh',
+        'display_name' => 'Jhonh',
+        'status' => TelegramAccessSession::STATUS_APPROVED,
+        'approved_at' => now(),
+        'last_message_at' => now(),
+    ]);
+
+    $team->aiProviderConfiguration()->create([
+        'provider' => AiProvider::OpenAi->value,
+        'model' => 'gpt-4.1-mini',
+        'api_key' => 'openai-api-key',
+        'is_enabled' => true,
+    ]);
+
+    $parentAgent = AutomationAgent::factory()
+        ->for($team)
+        ->create([
+            'name' => 'Automation orchestrator',
+            'target_tool' => 'route_task',
+            'is_enabled' => true,
+        ]);
+
+    AutomationAgent::factory()
+        ->for($team)
+        ->childOf($parentAgent)
+        ->create([
+            'name' => 'Monthly billing agent',
+            'target_tool' => 'create_invoice',
+            'instructions' => 'Create the monthly invoice and validate the customer.',
+            'is_enabled' => true,
+        ]);
+
+    $team->telegramInboundMessages()->create([
+        'direction' => 'inbound',
+        'update_id' => 912345711,
+        'update_type' => 'message',
+        'chat_id' => '123456789',
+        'from_user_id' => '555',
+        'from_username' => 'jhonh',
+        'message_text' => 'Quiero ver las facturas generadas desde enero.',
+        'payload' => [
+            'update_id' => 912345711,
+            'message' => [
+                'text' => 'Quiero ver las facturas generadas desde enero.',
+            ],
+        ],
+    ]);
+
+    $team->telegramInboundMessages()->create([
+        'direction' => 'outbound',
+        'update_type' => 'assistant_message',
+        'chat_id' => '123456789',
+        'from_username' => 'Automation orchestrator',
+        'message_text' => 'Ya revise tus facturas en la Suite de Quick CRM y encontre 1 registros recientes.',
+        'payload' => [
+            'sent_via' => 'telegram_notification',
+            'history_context' => [
+                'conversation' => [
+                    'last_topic' => 'invoices',
+                    'last_invoice_reference' => 'IN2408-0002',
+                    'recent_messages' => [
+                        [
+                            'role' => 'user',
+                            'text' => 'Quiero ver las facturas generadas desde enero.',
+                        ],
+                        [
+                            'role' => 'assistant',
+                            'text' => 'Ya revise tus facturas en la Suite de Quick CRM y encontre 1 registros recientes.',
+                        ],
+                    ],
+                ],
+            ],
+        ],
+    ]);
+
+    $response = $this
+        ->postJson(route('automation.telegram.webhook', $team), [
+            'update_id' => 912345712,
+            'message' => [
+                'message_id' => 91,
+                'chat' => [
+                    'id' => 123456789,
+                    'type' => 'private',
+                ],
+                'from' => [
+                    'id' => 555,
+                    'username' => 'jhonh',
+                ],
+                'text' => 'puedes aclararme lo anterior?',
+            ],
+        ], [
+            'X-Telegram-Bot-Api-Secret-Token' => 'telegram-webhook-secret',
+        ]);
+
+    $response->assertNoContent();
+
+    Notification::assertSentOnDemand(TelegramMessageNotification::class, function (
+        TelegramMessageNotification $notification,
+        array $channels,
+        AnonymousNotifiable $notifiable,
+    ): bool {
+        expect($channels)->toContain('telegram');
+        expect($notifiable->routeNotificationFor('telegram'))->toBe('123456789');
+
+        return $notification->botToken === 'telegram-bot-token'
+            && $notification->chatId === '123456789'
+            && $notification->content === 'Claro, sigo el hilo y te ayudo con eso.';
+    });
 });

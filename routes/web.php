@@ -46,6 +46,8 @@ Route::prefix('{current_team}/automation')
         Route::post('telegram/detect-chat-id', [TelegramController::class, 'detectChatId'])->name('telegram.detect-chat-id');
         Route::post('telegram/sync-webhook', [TelegramController::class, 'syncWebhook'])->name('telegram.sync-webhook');
         Route::post('telegram/test', [TelegramController::class, 'testConnection'])->name('telegram.test');
+        Route::patch('telegram/access/{telegram_access_session}/approve', [TelegramController::class, 'approveAccess'])->name('telegram.access.approve');
+        Route::patch('telegram/access/{telegram_access_session}/revoke', [TelegramController::class, 'revokeAccess'])->name('telegram.access.revoke');
         Route::patch('telegram/inbox/{telegram_inbound_message}/training/approve', [TelegramController::class, 'approveTraining'])->name('telegram.training.approve');
         Route::patch('telegram/inbox/{telegram_inbound_message}/training/reject', [TelegramController::class, 'rejectTraining'])->name('telegram.training.reject');
 

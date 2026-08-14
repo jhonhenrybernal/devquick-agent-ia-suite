@@ -8,6 +8,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Requests\Automation\TelegramConfigurationRequest;
 use App\Models\AutomationAgent;
 use App\Models\Team;
+use App\Models\TelegramAccessSession;
 use App\Models\TelegramConfiguration;
 use App\Models\TelegramInboundMessage;
 use App\Services\Telegram\TelegramApi;
@@ -55,6 +56,29 @@ class TelegramController extends Controller
     }
 
     /**
+     * Map a Telegram access session for frontend consumption.
+     *
+     * @return array<string, mixed>
+     */
+    private function mapAccessSession(TelegramAccessSession $session): array
+    {
+        return [
+            'id' => $session->id,
+            'telegramUserId' => $session->telegram_user_id,
+            'chatId' => $session->chat_id,
+            'telegramUsername' => $session->telegram_username,
+            'displayName' => $session->display_name,
+            'status' => $session->status,
+            'requestedAt' => $session->requested_at?->toISOString(),
+            'approvedAt' => $session->approved_at?->toISOString(),
+            'revokedAt' => $session->revoked_at?->toISOString(),
+            'approvedByUserName' => $session->approvedByUser?->name,
+            'lastMessageAt' => $session->last_message_at?->toISOString(),
+            'notes' => $session->notes,
+        ];
+    }
+
+    /**
      * Show the Telegram configuration page.
      */
     public function edit(Team $current_team, TelegramApi $telegramApi): Response
@@ -63,6 +87,11 @@ class TelegramController extends Controller
         $latestWebhookMessage = $current_team->telegramInboundMessages()
             ->latest()
             ->first();
+        $telegramAccessSessions = $current_team->telegramAccessSessions()
+            ->with(['approvedByUser'])
+            ->orderByRaw("case status when 'pending' then 0 when 'approved' then 1 else 2 end")
+            ->latest('updated_at')
+            ->get();
         $aiProviderConfiguration = $current_team->aiProviderConfiguration;
         $aiProvider = AiProvider::tryFrom($aiProviderConfiguration?->provider ?? '') ?? AiProvider::OpenAi;
         $webhookUrl = $telegramConfiguration?->webhook_secret
@@ -97,6 +126,15 @@ class TelegramController extends Controller
                 'latestWebhookMessage' => $latestWebhookMessage
                     ? $this->mapInboundMessage($latestWebhookMessage)
                     : null,
+                'accessSessions' => $telegramAccessSessions->map(
+                    fn (TelegramAccessSession $session): array => $this->mapAccessSession($session),
+                ),
+                'accessSummary' => [
+                    'total' => $telegramAccessSessions->count(),
+                    'pending' => $telegramAccessSessions->where('status', TelegramAccessSession::STATUS_PENDING)->count(),
+                    'approved' => $telegramAccessSessions->where('status', TelegramAccessSession::STATUS_APPROVED)->count(),
+                    'revoked' => $telegramAccessSessions->where('status', TelegramAccessSession::STATUS_REVOKED)->count(),
+                ],
                 'aiProvider' => [
                     'provider' => $aiProviderConfiguration?->provider ?? $aiProvider->value,
                     'providerLabel' => $aiProvider->label(),
@@ -210,6 +248,61 @@ class TelegramController extends Controller
             'current_team' => $current_team,
             'message' => $telegramInboundMessage->id,
         ]);
+    }
+
+    /**
+     * Approve a Telegram access session.
+     */
+    public function approveAccess(
+        Team $current_team,
+        TelegramAccessSession $telegramAccessSession,
+    ): RedirectResponse {
+        abort_unless($telegramAccessSession->team_id === $current_team->id, 404);
+
+        $telegramAccessSession->forceFill([
+            'status' => TelegramAccessSession::STATUS_APPROVED,
+            'approved_at' => now(),
+            'revoked_at' => null,
+            'approved_by_user_id' => request()->user()?->id,
+            'requested_at' => $telegramAccessSession->requested_at ?? now(),
+        ])->save();
+
+        Inertia::flash('toast', [
+            'type' => 'success',
+            'message' => __('Telegram access approved for :name.', [
+                'name' => $telegramAccessSession->display_name
+                    ? sprintf('%s (@%s)', $telegramAccessSession->display_name, $telegramAccessSession->telegram_username ?? $telegramAccessSession->telegram_user_id)
+                    : ($telegramAccessSession->telegram_username ?? $telegramAccessSession->telegram_user_id),
+            ]),
+        ]);
+
+        return to_route('automation.telegram.edit', $current_team);
+    }
+
+    /**
+     * Revoke a Telegram access session.
+     */
+    public function revokeAccess(
+        Team $current_team,
+        TelegramAccessSession $telegramAccessSession,
+    ): RedirectResponse {
+        abort_unless($telegramAccessSession->team_id === $current_team->id, 404);
+
+        $telegramAccessSession->forceFill([
+            'status' => TelegramAccessSession::STATUS_REVOKED,
+            'revoked_at' => now(),
+        ])->save();
+
+        Inertia::flash('toast', [
+            'type' => 'warning',
+            'message' => __('Telegram access revoked for :name.', [
+                'name' => $telegramAccessSession->display_name
+                    ? sprintf('%s (@%s)', $telegramAccessSession->display_name, $telegramAccessSession->telegram_username ?? $telegramAccessSession->telegram_user_id)
+                    : ($telegramAccessSession->telegram_username ?? $telegramAccessSession->telegram_user_id),
+            ]),
+        ]);
+
+        return to_route('automation.telegram.edit', $current_team);
     }
 
     /**

@@ -157,6 +157,16 @@ class Team extends Model
     }
 
     /**
+     * Get the Telegram access sessions for this team.
+     *
+     * @return HasMany<TelegramAccessSession, $this>
+     */
+    public function telegramAccessSessions(): HasMany
+    {
+        return $this->hasMany(TelegramAccessSession::class);
+    }
+
+    /**
      * Get the attributes that should be cast.
      *
      * @return array<string, string>
